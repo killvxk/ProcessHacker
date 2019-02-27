@@ -35,14 +35,7 @@ BOOLEAN PhIoSupportInitialization(
     parameters.FreeListSize = sizeof(PH_FILE_STREAM);
     parameters.FreeListCount = 16;
 
-    if (!NT_SUCCESS(PhCreateObjectTypeEx(
-        &PhFileStreamType,
-        L"FileStream",
-        PHOBJTYPE_USE_FREE_LIST,
-        PhpFileStreamDeleteProcedure,
-        &parameters
-        )))
-        return FALSE;
+    PhFileStreamType = PhCreateObjectTypeEx(L"FileStream", PH_OBJECT_TYPE_USE_FREE_LIST, PhpFileStreamDeleteProcedure, &parameters);
 
     return TRUE;
 }
@@ -580,17 +573,9 @@ NTSTATUS PhCreateFileStream2(
     _In_ ULONG BufferLength
     )
 {
-    NTSTATUS status;
     PPH_FILE_STREAM fileStream;
 
-    if (!NT_SUCCESS(status = PhCreateObject(
-        &fileStream,
-        sizeof(PH_FILE_STREAM),
-        0,
-        PhFileStreamType
-        )))
-        return status;
-
+    fileStream = PhCreateObject(sizeof(PH_FILE_STREAM), PhFileStreamType);
     fileStream->FileHandle = FileHandle;
     fileStream->Flags = Flags;
     fileStream->Position.QuadPart = 0;
@@ -612,7 +597,7 @@ NTSTATUS PhCreateFileStream2(
 
     *FileStream = fileStream;
 
-    return status;
+    return STATUS_SUCCESS;
 }
 
 VOID NTAPI PhpFileStreamDeleteProcedure(
@@ -1238,15 +1223,15 @@ NTSTATUS PhUnlockFileStream(
         );
 }
 
-NTSTATUS PhWriteStringAsAnsiFileStream(
+NTSTATUS PhWriteStringAsUtf8FileStream(
     _Inout_ PPH_FILE_STREAM FileStream,
     _In_ PPH_STRINGREF String
     )
 {
-    return PhWriteStringAsAnsiFileStreamEx(FileStream, String->Buffer, String->Length);
+    return PhWriteStringAsUtf8FileStreamEx(FileStream, String->Buffer, String->Length);
 }
 
-NTSTATUS PhWriteStringAsAnsiFileStream2(
+NTSTATUS PhWriteStringAsUtf8FileStream2(
     _Inout_ PPH_FILE_STREAM FileStream,
     _In_ PWSTR String
     )
@@ -1255,50 +1240,83 @@ NTSTATUS PhWriteStringAsAnsiFileStream2(
 
     PhInitializeStringRef(&string, String);
 
-    return PhWriteStringAsAnsiFileStream(FileStream, &string);
+    return PhWriteStringAsUtf8FileStream(FileStream, &string);
 }
 
-NTSTATUS PhWriteStringAsAnsiFileStreamEx(
+NTSTATUS PhWriteStringAsUtf8FileStreamEx(
     _Inout_ PPH_FILE_STREAM FileStream,
     _In_ PWSTR Buffer,
     _In_ SIZE_T Length
     )
 {
     NTSTATUS status = STATUS_SUCCESS;
-    UNICODE_STRING block;
-    ANSI_STRING ansiString;
+    PH_STRINGREF block;
+    SIZE_T inPlaceUtf8Size;
+    PCHAR inPlaceUtf8 = NULL;
+    PPH_BYTES utf8 = NULL;
+
+    if (Length > PAGE_SIZE)
+    {
+        // In UTF-8, the maximum number of bytes per code point is 4.
+        inPlaceUtf8Size = PAGE_SIZE / sizeof(WCHAR) * 4;
+        inPlaceUtf8 = PhAllocatePage(inPlaceUtf8Size, NULL);
+    }
 
     while (Length != 0)
     {
         block.Buffer = Buffer;
-        block.Length = PH_FILE_STREAM_STRING_BLOCK_SIZE;
+        block.Length = PAGE_SIZE;
 
         if (block.Length > Length)
-            block.Length = (USHORT)Length;
+            block.Length = Length;
 
-        if (!NT_SUCCESS(status = RtlUnicodeStringToAnsiString(
-            &ansiString,
-            &block,
-            TRUE
-            )))
-            return status;
+        if (inPlaceUtf8)
+        {
+            SIZE_T bytesInUtf8String;
 
-        PhWriteFileStream(
-            FileStream,
-            ansiString.Buffer,
-            ansiString.Length
-            );
+            if (!PhConvertUtf16ToUtf8Buffer(
+                inPlaceUtf8,
+                inPlaceUtf8Size,
+                &bytesInUtf8String,
+                block.Buffer,
+                block.Length
+                ))
+            {
+                status = STATUS_INVALID_PARAMETER;
+                goto CleanupExit;
+            }
 
-        RtlFreeAnsiString(&ansiString);
+            status = PhWriteFileStream(FileStream, inPlaceUtf8, (ULONG)bytesInUtf8String);
+        }
+        else
+        {
+            utf8 = PhConvertUtf16ToUtf8Ex(block.Buffer, block.Length);
+
+            if (!utf8)
+            {
+                status = STATUS_INVALID_PARAMETER;
+                goto CleanupExit;
+            }
+
+            status = PhWriteFileStream(FileStream, utf8->Buffer, (ULONG)utf8->Length);
+            PhDereferenceObject(utf8);
+        }
+
+        if (!NT_SUCCESS(status))
+            goto CleanupExit;
 
         Buffer += block.Length / sizeof(WCHAR);
         Length -= block.Length;
     }
 
+CleanupExit:
+    if (inPlaceUtf8)
+        PhFreePage(inPlaceUtf8);
+
     return status;
 }
 
-NTSTATUS PhWriteStringFormatFileStream_V(
+NTSTATUS PhWriteStringFormatAsUtf8FileStream_V(
     _Inout_ PPH_FILE_STREAM FileStream,
     _In_ _Printf_format_string_ PWSTR Format,
     _In_ va_list ArgPtr
@@ -1308,13 +1326,13 @@ NTSTATUS PhWriteStringFormatFileStream_V(
     PPH_STRING string;
 
     string = PhFormatString_V(Format, ArgPtr);
-    status = PhWriteStringAsAnsiFileStream(FileStream, &string->sr);
+    status = PhWriteStringAsUtf8FileStream(FileStream, &string->sr);
     PhDereferenceObject(string);
 
     return status;
 }
 
-NTSTATUS PhWriteStringFormatFileStream(
+NTSTATUS PhWriteStringFormatAsUtf8FileStream(
     _Inout_ PPH_FILE_STREAM FileStream,
     _In_ _Printf_format_string_ PWSTR Format,
     ...
@@ -1324,5 +1342,5 @@ NTSTATUS PhWriteStringFormatFileStream(
 
     va_start(argptr, Format);
 
-    return PhWriteStringFormatFileStream_V(FileStream, Format, argptr);
+    return PhWriteStringFormatAsUtf8FileStream_V(FileStream, Format, argptr);
 }

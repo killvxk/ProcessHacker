@@ -43,7 +43,11 @@ static PH_KEY_VALUE_PAIR PhpServiceTypePairs[] =
     SIP(L"Own Process", SERVICE_WIN32_OWN_PROCESS),
     SIP(L"Share Process", SERVICE_WIN32_SHARE_PROCESS),
     SIP(L"Own Interactive Process", SERVICE_WIN32_OWN_PROCESS | SERVICE_INTERACTIVE_PROCESS),
-    SIP(L"Share Interactive Process", SERVICE_WIN32_SHARE_PROCESS | SERVICE_INTERACTIVE_PROCESS)
+    SIP(L"Share Interactive Process", SERVICE_WIN32_SHARE_PROCESS | SERVICE_INTERACTIVE_PROCESS),
+    SIP(L"User Own Process", SERVICE_USER_OWN_PROCESS),
+    SIP(L"User Own Process (Instance)", SERVICE_USER_OWN_PROCESS | SERVICE_USERSERVICE_INSTANCE),
+    SIP(L"User Share Process", SERVICE_USER_SHARE_PROCESS),
+    SIP(L"User Share Process (Instance)", SERVICE_USER_SHARE_PROCESS | SERVICE_USERSERVICE_INSTANCE),
 };
 
 static PH_KEY_VALUE_PAIR PhpServiceStartTypePairs[] =
@@ -63,8 +67,9 @@ static PH_KEY_VALUE_PAIR PhpServiceErrorControlPairs[] =
     SIP(L"Critical", SERVICE_ERROR_CRITICAL)
 };
 
-WCHAR *PhServiceTypeStrings[6] = { L"Driver", L"FS Driver", L"Own Process", L"Share Process",
-    L"Own Interactive Process", L"Share Interactive Process" };
+WCHAR *PhServiceTypeStrings[10] = { L"Driver", L"FS Driver", L"Own Process", L"Share Process",
+    L"Own Interactive Process", L"Share Interactive Process", L"User Own Process", L"User Own Process (Instance)",
+    L"User Share Process", L"User Share Process (Instance)" };
 WCHAR *PhServiceStartTypeStrings[5] = { L"Disabled", L"Boot Start", L"System Start",
     L"Auto Start", L"Demand Start" };
 WCHAR *PhServiceErrorControlStrings[4] = { L"Ignore", L"Normal", L"Severe", L"Critical" };
@@ -84,7 +89,7 @@ PVOID PhEnumServices(
     ULONG servicesReturned;
 
     if (!Type)
-        Type = SERVICE_DRIVER | SERVICE_WIN32;
+        Type = WindowsVersion >= WINDOWS_10 ? SERVICE_TYPE_ALL : (SERVICE_DRIVER | SERVICE_WIN32);
     if (!State)
         State = SERVICE_STATE_ALL;
 
@@ -131,7 +136,7 @@ PVOID PhEnumServices(
         }
     }
 
-    if (bufferSize <= 0x10000) initialBufferSize = bufferSize;
+    if (bufferSize <= 0x20000) initialBufferSize = bufferSize;
     *Count = servicesReturned;
 
     return buffer;
@@ -161,7 +166,7 @@ PVOID PhGetServiceConfig(
     )
 {
     PVOID buffer;
-    ULONG bufferSize = 0x100;
+    ULONG bufferSize = 0x200;
 
     buffer = PhAllocate(bufferSize);
 
@@ -412,15 +417,15 @@ PPH_STRING PhGetServiceNameFromTag(
 
     if (!I_QueryTagInformation)
     {
-        I_QueryTagInformation = PhGetProcAddress(L"advapi32.dll", "I_QueryTagInformation");
+        I_QueryTagInformation = PhGetModuleProcAddress(L"advapi32.dll", "I_QueryTagInformation");
 
         if (!I_QueryTagInformation)
             return NULL;
     }
 
     memset(&nameFromTag, 0, sizeof(TAG_INFO_NAME_FROM_TAG));
-    nameFromTag.InParams.dwPid = (ULONG)ProcessId;
-    nameFromTag.InParams.dwTag = (ULONG)ServiceTag;
+    nameFromTag.InParams.dwPid = HandleToUlong(ProcessId);
+    nameFromTag.InParams.dwTag = PtrToUlong(ServiceTag);
 
     I_QueryTagInformation(NULL, eTagInfoLevelNameFromTag, &nameFromTag);
 
@@ -468,6 +473,57 @@ NTSTATUS PhGetThreadServiceTag(
 
     if (openedProcessHandle)
         NtClose(ProcessHandle);
+
+    return status;
+}
+
+NTSTATUS PhGetServiceDllParameter(
+    _In_ PPH_STRINGREF ServiceName,
+    _Out_ PPH_STRING *ServiceDll
+    )
+{
+    static PH_STRINGREF servicesKeyName = PH_STRINGREF_INIT(L"System\\CurrentControlSet\\Services\\");
+    static PH_STRINGREF parameters = PH_STRINGREF_INIT(L"\\Parameters");
+
+    NTSTATUS status;
+    HANDLE keyHandle;
+    PPH_STRING keyName;
+
+    keyName = PhConcatStringRef3(&servicesKeyName, ServiceName, &parameters);
+
+    if (NT_SUCCESS(status = PhOpenKey(
+        &keyHandle,
+        KEY_READ,
+        PH_KEY_LOCAL_MACHINE,
+        &keyName->sr,
+        0
+        )))
+    {
+        PPH_STRING serviceDllString;
+
+        if (serviceDllString = PhQueryRegistryString(keyHandle, L"ServiceDll"))
+        {
+            PPH_STRING expandedString;
+
+            if (expandedString = PhExpandEnvironmentStrings(&serviceDllString->sr))
+            {
+                *ServiceDll = expandedString;
+                PhDereferenceObject(serviceDllString);
+            }
+            else
+            {
+                *ServiceDll = serviceDllString;
+            }
+        }
+        else
+        {
+            status = STATUS_NOT_FOUND;
+        }
+
+        NtClose(keyHandle);
+    }
+
+    PhDereferenceObject(keyName);
 
     return status;
 }

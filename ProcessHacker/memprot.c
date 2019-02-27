@@ -86,7 +86,7 @@ static INT_PTR CALLBACK PhpMemoryProtectDlgProc(
                 L"0x400 - PAGE_WRITECOMBINE\r\n"
                 );
 
-            SetFocus(GetDlgItem(hwndDlg, IDC_VALUE));
+            SendMessage(hwndDlg, WM_NEXTDLGCTL, (WPARAM)GetDlgItem(hwndDlg, IDC_VALUE), TRUE);
         }
         break;
     case WM_DESTROY:
@@ -108,7 +108,7 @@ static INT_PTR CALLBACK PhpMemoryProtectDlgProc(
                     HANDLE processHandle;
                     ULONG64 protect;
 
-                    PhStringToInteger64(&PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_VALUE)->sr, 0, &protect);
+                    PhStringToInteger64(&PhaGetDlgItemText(hwndDlg, IDC_VALUE)->sr, 0, &protect);
 
                     if (NT_SUCCESS(status = PhOpenProcess(
                         &processHandle,
@@ -121,7 +121,7 @@ static INT_PTR CALLBACK PhpMemoryProtectDlgProc(
                         ULONG oldProtect;
 
                         baseAddress = context->MemoryItem->BaseAddress;
-                        regionSize = context->MemoryItem->Size;
+                        regionSize = context->MemoryItem->RegionSize;
 
                         status = NtProtectVirtualMemory(
                             processHandle,
@@ -132,7 +132,7 @@ static INT_PTR CALLBACK PhpMemoryProtectDlgProc(
                             );
 
                         if (NT_SUCCESS(status))
-                            context->MemoryItem->Protection = (ULONG)protect;
+                            context->MemoryItem->Protect = (ULONG)protect;
                     }
 
                     if (NT_SUCCESS(status))
@@ -142,7 +142,7 @@ static INT_PTR CALLBACK PhpMemoryProtectDlgProc(
                     else
                     {
                         PhShowStatus(hwndDlg, L"Unable to change memory protection", status, 0);
-                        SetFocus(GetDlgItem(hwndDlg, IDC_VALUE));
+                        SendMessage(hwndDlg, WM_NEXTDLGCTL, (WPARAM)GetDlgItem(hwndDlg, IDC_VALUE), TRUE);
                         Edit_SetSel(GetDlgItem(hwndDlg, IDC_VALUE), 0, -1);
                     }
                 }

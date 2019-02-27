@@ -223,8 +223,7 @@ VERIFY_RESULT PvpVerifyFileWithAdditionalCatalog(
             PH_STRINGREF baseFileName;
 
             remainingFileName = FileName->sr;
-            remainingFileName.Buffer = (PWCHAR)((PCHAR)remainingFileName.Buffer + windowsAppsPath->Length);
-            remainingFileName.Length -= windowsAppsPath->Length;
+            PhSkipStringRef(&remainingFileName, windowsAppsPath->Length);
             indexOfBackslash = PhFindCharInStringRef(&remainingFileName, '\\', FALSE);
 
             if (indexOfBackslash != -1)
@@ -459,19 +458,31 @@ INT_PTR CALLBACK PvpPeGeneralDlgProc(
             if (PvMappedImage.NtHeaders->FileHeader.Characteristics & IMAGE_FILE_UP_SYSTEM_ONLY)
                 PhAppendStringBuilder2(&stringBuilder, L"Uni-processor only, ");
 
+            if (PvMappedImage.NtHeaders->OptionalHeader.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA)
+                PhAppendStringBuilder2(&stringBuilder, L"High entropy VA, ");
             if (PvMappedImage.NtHeaders->OptionalHeader.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE)
                 PhAppendStringBuilder2(&stringBuilder, L"Dynamic base, ");
             if (PvMappedImage.NtHeaders->OptionalHeader.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_FORCE_INTEGRITY)
                 PhAppendStringBuilder2(&stringBuilder, L"Force integrity check, ");
             if (PvMappedImage.NtHeaders->OptionalHeader.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_NX_COMPAT)
                 PhAppendStringBuilder2(&stringBuilder, L"NX compatible, ");
+            if (PvMappedImage.NtHeaders->OptionalHeader.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_NO_ISOLATION)
+                PhAppendStringBuilder2(&stringBuilder, L"No isolation, ");
             if (PvMappedImage.NtHeaders->OptionalHeader.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_NO_SEH)
                 PhAppendStringBuilder2(&stringBuilder, L"No SEH, ");
+            if (PvMappedImage.NtHeaders->OptionalHeader.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_NO_BIND)
+                PhAppendStringBuilder2(&stringBuilder, L"Do not bind, ");
+            if (PvMappedImage.NtHeaders->OptionalHeader.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_APPCONTAINER)
+                PhAppendStringBuilder2(&stringBuilder, L"AppContainer, ");
+            if (PvMappedImage.NtHeaders->OptionalHeader.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_WDM_DRIVER)
+                PhAppendStringBuilder2(&stringBuilder, L"WDM driver, ");
+            if (PvMappedImage.NtHeaders->OptionalHeader.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_GUARD_CF)
+                PhAppendStringBuilder2(&stringBuilder, L"Control Flow Guard, ");
             if (PvMappedImage.NtHeaders->OptionalHeader.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_TERMINAL_SERVER_AWARE)
                 PhAppendStringBuilder2(&stringBuilder, L"Terminal server aware, ");
 
             if (PhEndsWithString2(stringBuilder.String, L", ", FALSE))
-                PhRemoveStringBuilder(&stringBuilder, stringBuilder.String->Length / 2 - 2, 2);
+                PhRemoveEndStringBuilder(&stringBuilder, 2);
 
             SetDlgItemText(hwndDlg, IDC_CHARACTERISTICS, stringBuilder.String->Buffer);
             PhDeleteStringBuilder(&stringBuilder);
@@ -489,15 +500,15 @@ INT_PTR CALLBACK PvpPeGeneralDlgProc(
                 WCHAR sectionName[9];
                 WCHAR pointer[PH_PTR_STR_LEN_1];
 
-                if (PhCopyUnicodeStringZFromAnsi(PvMappedImage.Sections[i].Name,
+                if (PhCopyStringZFromBytes(PvMappedImage.Sections[i].Name,
                     IMAGE_SIZEOF_SHORT_NAME, sectionName, 9, NULL))
                 {
                     lvItemIndex = PhAddListViewItem(lvHandle, MAXINT, sectionName, NULL);
 
-                    PhPrintPointer(pointer, (PVOID)PvMappedImage.Sections[i].VirtualAddress);
+                    PhPrintPointer(pointer, UlongToPtr(PvMappedImage.Sections[i].VirtualAddress));
                     PhSetListViewSubItem(lvHandle, lvItemIndex, 1, pointer);
 
-                    PhPrintPointer(pointer, (PVOID)PvMappedImage.Sections[i].SizeOfRawData);
+                    PhPrintPointer(pointer, UlongToPtr(PvMappedImage.Sections[i].SizeOfRawData));
                     PhSetListViewSubItem(lvHandle, lvItemIndex, 2, pointer);
                 }
             }
@@ -618,7 +629,7 @@ VOID PvpProcessImports(
                     WCHAR number[PH_INT32_STR_LEN_1];
 
                     if (!DelayImports)
-                        name = PhCreateStringFromAnsi(importDll.Name);
+                        name = PhZeroExtendToUtf16(importDll.Name);
                     else
                         name = PhFormatString(L"%S (Delay)", importDll.Name);
 
@@ -627,7 +638,7 @@ VOID PvpProcessImports(
 
                     if (importEntry.Name)
                     {
-                        name = PhCreateStringFromAnsi(importEntry.Name);
+                        name = PhZeroExtendToUtf16(importEntry.Name);
                         PhSetListViewSubItem(ListViewHandle, lvItemIndex, 1, name->Buffer);
                         PhDereferenceObject(name);
 
@@ -688,6 +699,11 @@ INT_PTR CALLBACK PvpPeImportsDlgProc(
             PvHandleListViewNotifyForCopy(lParam, GetDlgItem(hwndDlg, IDC_LIST));
         }
         break;
+    case WM_CTLCOLORDLG:
+        {
+            return (INT_PTR)GetSysColorBrush(COLOR_WINDOW);
+        }
+        break;
     }
 
     return FALSE;
@@ -734,7 +750,7 @@ INT_PTR CALLBACK PvpPeExportsDlgProc(
 
                         if (exportEntry.Name)
                         {
-                            name = PhCreateStringFromAnsi(exportEntry.Name);
+                            name = PhZeroExtendToUtf16(exportEntry.Name);
                             lvItemIndex = PhAddListViewItem(lvHandle, MAXINT, name->Buffer, NULL);
                             PhDereferenceObject(name);
                         }
@@ -757,7 +773,7 @@ INT_PTR CALLBACK PvpPeExportsDlgProc(
                         }
                         else
                         {
-                            name = PhCreateStringFromAnsi(exportFunction.ForwardedName);
+                            name = PhZeroExtendToUtf16(exportFunction.ForwardedName);
                             PhSetListViewSubItem(lvHandle, lvItemIndex, 2, name->Buffer);
                             PhDereferenceObject(name);
                         }
@@ -771,6 +787,11 @@ INT_PTR CALLBACK PvpPeExportsDlgProc(
     case WM_NOTIFY:
         {
             PvHandleListViewNotifyForCopy(lParam, GetDlgItem(hwndDlg, IDC_LIST));
+        }
+        break;
+    case WM_CTLCOLORDLG:
+        {
+            return (INT_PTR)GetSysColorBrush(COLOR_WINDOW);
         }
         break;
     }
@@ -866,6 +887,11 @@ INT_PTR CALLBACK PvpPeLoadConfigDlgProc(
             PvHandleListViewNotifyForCopy(lParam, GetDlgItem(hwndDlg, IDC_LIST));
         }
         break;
+    case WM_CTLCOLORDLG:
+        {
+            return (INT_PTR)GetSysColorBrush(COLOR_WINDOW);
+        }
+        break;
     }
 
     return FALSE;
@@ -898,17 +924,26 @@ INT_PTR CALLBACK PvpPeClrDlgProc(
                 PhAppendStringBuilder2(&stringBuilder, L"IL only, ");
             if (PvImageCor20Header->Flags & COMIMAGE_FLAGS_32BITREQUIRED)
                 PhAppendStringBuilder2(&stringBuilder, L"32-bit only, ");
+            if (PvImageCor20Header->Flags & COMIMAGE_FLAGS_32BITPREFERRED)
+                PhAppendStringBuilder2(&stringBuilder, L"32-bit preferred, ");
             if (PvImageCor20Header->Flags & COMIMAGE_FLAGS_IL_LIBRARY)
                 PhAppendStringBuilder2(&stringBuilder, L"IL library, ");
-            if (PvImageCor20Header->Flags & COMIMAGE_FLAGS_STRONGNAMESIGNED)
-                PhAppendStringBuilder2(&stringBuilder, L"Strong-name signed, ");
+
+            if (PvImageCor20Header->StrongNameSignature.VirtualAddress != 0 && PvImageCor20Header->StrongNameSignature.Size != 0)
+            {
+                if (PvImageCor20Header->Flags & COMIMAGE_FLAGS_STRONGNAMESIGNED)
+                    PhAppendStringBuilder2(&stringBuilder, L"Strong-name signed, ");
+                else
+                    PhAppendStringBuilder2(&stringBuilder, L"Strong-name delay signed, ");
+            }
+
             if (PvImageCor20Header->Flags & COMIMAGE_FLAGS_NATIVE_ENTRYPOINT)
                 PhAppendStringBuilder2(&stringBuilder, L"Native entry-point, ");
             if (PvImageCor20Header->Flags & COMIMAGE_FLAGS_TRACKDEBUGDATA)
                 PhAppendStringBuilder2(&stringBuilder, L"Track debug data, ");
 
             if (PhEndsWithString2(stringBuilder.String, L", ", FALSE))
-                PhRemoveStringBuilder(&stringBuilder, stringBuilder.String->Length / 2 - 2, 2);
+                PhRemoveEndStringBuilder(&stringBuilder, 2);
 
             SetDlgItemText(hwndDlg, IDC_FLAGS, stringBuilder.String->Buffer);
             PhDeleteStringBuilder(&stringBuilder);
@@ -943,7 +978,7 @@ INT_PTR CALLBACK PvpPeClrDlgProc(
 
             if (versionStringLength != 0)
             {
-                string = PhCreateStringFromAnsiEx((PCHAR)metaData + 12 + 4, versionStringLength);
+                string = PhZeroExtendToUtf16Ex((PCHAR)metaData + 12 + 4, versionStringLength);
                 SetDlgItemText(hwndDlg, IDC_VERSIONSTRING, string->Buffer);
                 PhDereferenceObject(string);
             }

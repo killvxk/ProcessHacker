@@ -23,6 +23,23 @@
 #include <phapp.h>
 #include <kphuser.h>
 
+typedef NTSTATUS (NTAPI *_NtGetNextProcess)(
+    _In_ HANDLE ProcessHandle,
+    _In_ ACCESS_MASK DesiredAccess,
+    _In_ ULONG HandleAttributes,
+    _In_ ULONG Flags,
+    _Out_ PHANDLE NewProcessHandle
+    );
+
+typedef NTSTATUS (NTAPI *_NtGetNextThread)(
+    _In_ HANDLE ProcessHandle,
+    _In_ HANDLE ThreadHandle,
+    _In_ ACCESS_MASK DesiredAccess,
+    _In_ ULONG HandleAttributes,
+    _In_ ULONG Flags,
+    _Out_ PHANDLE NewThreadHandle
+    );
+
 #define CROSS_INDEX 0
 #define TICK_INDEX 1
 
@@ -84,7 +101,7 @@ VOID PhShowProcessTerminatorDialog(
                     );
 
                 if (!NT_SUCCESS(status = NtRemoveProcessDebug(processHandle, debugObjectHandle)))
-                    PhShowStatus(ParentWindowHandle, L"Unable to deatch the process", status, 0);
+                    PhShowStatus(ParentWindowHandle, L"Unable to detach the process", status, 0);
             }
 
             NtClose(debugObjectHandle);
@@ -108,9 +125,9 @@ static PVOID GetExitProcessFunction(
 {
     // Vista and above export.
     if (WindowsVersion >= WINDOWS_VISTA)
-        return PhGetProcAddress(L"ntdll.dll", "RtlExitUserProcess");
+        return PhGetModuleProcAddress(L"ntdll.dll", "RtlExitUserProcess");
     else
-        return PhGetProcAddress(L"kernel32.dll", "ExitProcess");
+        return PhGetModuleProcAddress(L"kernel32.dll", "ExitProcess");
 }
 
 static NTSTATUS NTAPI TerminatorTP1(
@@ -285,13 +302,16 @@ static NTSTATUS NTAPI TerminatorTP1a(
     )
 {
     NTSTATUS status;
+    _NtGetNextProcess ntGetNextProcess;
     HANDLE processHandle = NtCurrentProcess();
     ULONG i;
 
-    if (!NtGetNextProcess)
+    ntGetNextProcess = PhGetModuleProcAddress(L"ntdll.dll", "NtGetNextProcess");
+
+    if (!ntGetNextProcess)
         return STATUS_NOT_SUPPORTED;
 
-    if (!NT_SUCCESS(status = NtGetNextProcess(
+    if (!NT_SUCCESS(status = ntGetNextProcess(
         NtCurrentProcess(),
         ProcessQueryAccess | PROCESS_TERMINATE,
         0,
@@ -314,7 +334,7 @@ static NTSTATUS NTAPI TerminatorTP1a(
             }
         }
 
-        if (NT_SUCCESS(status = NtGetNextProcess(
+        if (NT_SUCCESS(status = ntGetNextProcess(
             processHandle,
             ProcessQueryAccess | PROCESS_TERMINATE,
             0,
@@ -340,11 +360,14 @@ static NTSTATUS NTAPI TerminatorTT1a(
     )
 {
     NTSTATUS status;
+    _NtGetNextThread ntGetNextThread;
     HANDLE processHandle;
     HANDLE threadHandle;
     ULONG i;
 
-    if (!NtGetNextThread)
+    ntGetNextThread = PhGetModuleProcAddress(L"ntdll.dll", "NtGetNextThread");
+
+    if (!ntGetNextThread)
         return STATUS_NOT_SUPPORTED;
 
     if (NT_SUCCESS(status = PhOpenProcess(
@@ -353,7 +376,7 @@ static NTSTATUS NTAPI TerminatorTT1a(
         ProcessId
         )))
     {
-        if (!NT_SUCCESS(status = NtGetNextThread(
+        if (!NT_SUCCESS(status = ntGetNextThread(
             processHandle,
             NULL,
             THREAD_TERMINATE,
@@ -372,7 +395,7 @@ static NTSTATUS NTAPI TerminatorTT1a(
 
             PhTerminateThread(threadHandle, STATUS_SUCCESS);
 
-            if (NT_SUCCESS(NtGetNextThread(
+            if (NT_SUCCESS(ntGetNextThread(
                 processHandle,
                 threadHandle,
                 THREAD_TERMINATE,
@@ -416,7 +439,7 @@ static NTSTATUS NTAPI TerminatorCH1(
         {
             PhDuplicateObject(
                 processHandle,
-                (HANDLE)i,
+                UlongToHandle(i),
                 NULL,
                 NULL,
                 0,
@@ -792,7 +815,7 @@ static BOOLEAN PhpRunTerminatorTest(
         ))
         return FALSE;
 
-    if (WSTR_EQUAL(testItem->Id, L"TT4"))
+    if (PhEqualStringZ(testItem->Id, L"TT4", FALSE))
     {
         if (!PhShowConfirmMessage(
             WindowHandle,
@@ -861,7 +884,7 @@ static INT_PTR CALLBACK PhpProcessTerminatorDlgProc(
             title = PhFormatString(
                 L"Terminator - %s (%u)",
                 processItem->ProcessName->Buffer,
-                (ULONG)processItem->ProcessId
+                HandleToUlong(processItem->ProcessId)
                 );
             SetWindowText(hwndDlg, title->Buffer);
             PhDereferenceObject(title);
@@ -895,7 +918,7 @@ static INT_PTR CALLBACK PhpProcessTerminatorDlgProc(
 
                 check = TRUE;
 
-                if (WSTR_EQUAL(PhTerminatorTests[i].Id, L"TT4") || WSTR_EQUAL(PhTerminatorTests[i].Id, L"M1"))
+                if (PhEqualStringZ(PhTerminatorTests[i].Id, L"TT4", FALSE) || PhEqualStringZ(PhTerminatorTests[i].Id, L"M1", FALSE))
                     check = FALSE;
 
                 ListView_SetCheckState(lvHandle, itemIndex, check);

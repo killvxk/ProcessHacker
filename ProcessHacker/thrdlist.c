@@ -63,7 +63,6 @@ BOOLEAN NTAPI PhpThreadTreeNewCallback(
 VOID PhInitializeThreadList(
     _In_ HWND ParentWindowHandle,
     _In_ HWND TreeNewHandle,
-    _In_ PPH_PROCESS_ITEM ProcessItem,
     _Out_ PPH_THREAD_LIST_CONTEXT Context
     )
 {
@@ -134,7 +133,7 @@ ULONG PhpThreadNodeHashtableHashFunction(
     _In_ PVOID Entry
     )
 {
-    return (ULONG)(*(PPH_THREAD_NODE *)Entry)->ThreadId / 4;
+    return HandleToUlong((*(PPH_THREAD_NODE *)Entry)->ThreadId) / 4;
 }
 
 VOID PhLoadSettingsThreadList(
@@ -193,7 +192,7 @@ VOID PhSaveSettingsThreadList(
 PPH_THREAD_NODE PhAddThreadNode(
     _Inout_ PPH_THREAD_LIST_CONTEXT Context,
     _In_ PPH_THREAD_ITEM ThreadItem,
-    _In_ ULONG RunId
+    _In_ BOOLEAN FirstRun
     )
 {
     PPH_THREAD_NODE threadNode;
@@ -202,7 +201,7 @@ PPH_THREAD_NODE PhAddThreadNode(
     memset(threadNode, 0, sizeof(PH_THREAD_NODE));
     PhInitializeTreeNewNode(&threadNode->Node);
 
-    if (Context->EnableStateHighlighting && RunId != 1)
+    if (Context->EnableStateHighlighting && !FirstRun)
     {
         PhChangeShStateTn(
             &threadNode->Node,
@@ -493,7 +492,7 @@ BOOLEAN NTAPI PhpThreadTreeNewCallback(
             switch (getCellText->Id)
             {
             case PHTHTLC_TID:
-                PhInitializeStringRef(&getCellText->Text, threadItem->ThreadIdString);
+                PhInitializeStringRefLongHint(&getCellText->Text, threadItem->ThreadIdString);
                 break;
             case PHTHTLC_CPU:
                 {
@@ -535,7 +534,7 @@ BOOLEAN NTAPI PhpThreadTreeNewCallback(
                 {
                     if (threadItem->CyclesDelta.Delta != threadItem->CyclesDelta.Value && threadItem->CyclesDelta.Delta != 0)
                     {
-                        PhSwapReference2(&node->CyclesDeltaText, PhFormatUInt64(threadItem->CyclesDelta.Delta, TRUE));
+                        PhMoveReference(&node->CyclesDeltaText, PhFormatUInt64(threadItem->CyclesDelta.Delta, TRUE));
                         getCellText->Text = node->CyclesDeltaText->sr;
                     }
                 }
@@ -543,7 +542,7 @@ BOOLEAN NTAPI PhpThreadTreeNewCallback(
                 {
                     if (threadItem->ContextSwitchesDelta.Delta != threadItem->ContextSwitchesDelta.Value && threadItem->ContextSwitchesDelta.Delta != 0)
                     {
-                        PhSwapReference2(&node->CyclesDeltaText, PhFormatUInt64(threadItem->ContextSwitchesDelta.Delta, TRUE));
+                        PhMoveReference(&node->CyclesDeltaText, PhFormatUInt64(threadItem->ContextSwitchesDelta.Delta, TRUE));
                         getCellText->Text = node->CyclesDeltaText->sr;
                     }
                 }
@@ -553,7 +552,7 @@ BOOLEAN NTAPI PhpThreadTreeNewCallback(
                 getCellText->Text = PhGetStringRef(node->StartAddressText);
                 break;
             case PHTHTLC_PRIORITY:
-                PhSwapReference2(&node->PriorityText, PhGetThreadPriorityWin32String(threadItem->PriorityWin32));
+                PhMoveReference(&node->PriorityText, PhGetThreadPriorityWin32String(threadItem->PriorityWin32));
                 getCellText->Text = PhGetStringRef(node->PriorityText);
                 break;
             case PHTHTLC_SERVICE:
@@ -633,7 +632,7 @@ BOOLEAN NTAPI PhpThreadTreeNewCallback(
             data.DefaultSortOrder = DescendingSortOrder;
             PhInitializeTreeNewColumnMenuEx(&data, PH_TN_COLUMN_MENU_NO_VISIBILITY);
 
-            data.Selection = PhShowEMenu(data.Menu, hwnd, PH_EMENU_SHOW_LEFTRIGHT | PH_EMENU_SHOW_NONOTIFY,
+            data.Selection = PhShowEMenu(data.Menu, hwnd, PH_EMENU_SHOW_LEFTRIGHT,
                 PH_ALIGN_LEFT | PH_ALIGN_TOP, data.MouseEvent->ScreenLocation.x, data.MouseEvent->ScreenLocation.y);
             PhHandleTreeNewColumnMenu(&data);
             PhDeleteTreeNewColumnMenu(&data);

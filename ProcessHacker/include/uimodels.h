@@ -1,6 +1,7 @@
-#ifndef UIMODELS_H
-#define UIMODELS_H
+#ifndef PH_UIMODELS_H
+#define PH_UIMODELS_H
 
+// begin_phapppub
 // Common state highlighting support
 
 typedef struct _PH_SH_STATE
@@ -9,6 +10,7 @@ typedef struct _PH_SH_STATE
     HANDLE StateListHandle;
     ULONG TickCount;
 } PH_SH_STATE, *PPH_SH_STATE;
+// end_phapppub
 
 FORCEINLINE VOID PhChangeShStateTn(
     _Inout_ PPH_TREENEW_NODE Node,
@@ -189,8 +191,9 @@ FORCEINLINE VOID PhChangeShStateTn(
 #define PHPRTLC_PACKAGENAME 72
 #define PHPRTLC_APPID 73
 #define PHPRTLC_DPIAWARENESS 74
+#define PHPRTLC_CFGUARD 75
 
-#define PHPRTLC_MAXIMUM 75
+#define PHPRTLC_MAXIMUM 76
 #define PHPRTLC_IOGROUP_COUNT 9
 
 #define PHPN_WSCOUNTERS 0x1
@@ -205,6 +208,7 @@ FORCEINLINE VOID PhChangeShStateTn(
 #define PHPN_APPID 0x200
 #define PHPN_DPIAWARENESS 0x400
 
+// begin_phapppub
 typedef struct _PH_PROCESS_NODE
 {
     PH_TREENEW_NODE Node;
@@ -218,6 +222,7 @@ typedef struct _PH_PROCESS_NODE
 
     struct _PH_PROCESS_NODE *Parent;
     PPH_LIST Children;
+// end_phapppub
 
     PH_STRINGREF TextCache[PHPRTLC_MAXIMUM];
 
@@ -263,6 +268,7 @@ typedef struct _PH_PROCESS_NODE
     ULONG DpiAwareness;
 
     PPH_STRING TooltipText;
+    ULONG TooltipTextValidToTickCount;
 
     // Text buffers
     WCHAR CpuUsageText[PH_INT32_STR_LEN_1];
@@ -309,7 +315,9 @@ typedef struct _PH_PROCESS_NODE
     PH_GRAPH_BUFFERS CpuGraphBuffers;
     PH_GRAPH_BUFFERS PrivateGraphBuffers;
     PH_GRAPH_BUFFERS IoGraphBuffers;
+// begin_phapppub
 } PH_PROCESS_NODE, *PPH_PROCESS_NODE;
+// end_phapppub
 
 VOID PhProcessTreeListInitialization(
     VOID
@@ -331,63 +339,94 @@ VOID PhReloadSettingsProcessTreeList(
     VOID
     );
 
+// begin_phapppub
 PHAPPAPI
-struct _PH_TN_FILTER_SUPPORT *PhGetFilterSupportProcessTreeList(
+struct _PH_TN_FILTER_SUPPORT *
+NTAPI
+PhGetFilterSupportProcessTreeList(
     VOID
     );
+// end_phapppub
 
 PPH_PROCESS_NODE PhAddProcessNode(
     _In_ PPH_PROCESS_ITEM ProcessItem,
     _In_ ULONG RunId
     );
 
+// begin_phapppub
 PHAPPAPI
-PPH_PROCESS_NODE PhFindProcessNode(
+PPH_PROCESS_NODE
+NTAPI
+PhFindProcessNode(
     _In_ HANDLE ProcessId
     );
+// end_phapppub
 
 VOID PhRemoveProcessNode(
     _In_ PPH_PROCESS_NODE ProcessNode
     );
 
+// begin_phapppub
 PHAPPAPI
-VOID PhUpdateProcessNode(
+VOID
+NTAPI
+PhUpdateProcessNode(
     _In_ PPH_PROCESS_NODE ProcessNode
     );
+// end_phapppub
 
 VOID PhTickProcessNodes(
     VOID
     );
 
+// begin_phapppub
 PHAPPAPI
-PPH_PROCESS_ITEM PhGetSelectedProcessItem(
+PPH_PROCESS_ITEM
+NTAPI
+PhGetSelectedProcessItem(
     VOID
     );
 
 PHAPPAPI
-VOID PhGetSelectedProcessItems(
+VOID
+NTAPI
+PhGetSelectedProcessItems(
     _Out_ PPH_PROCESS_ITEM **Processes,
     _Out_ PULONG NumberOfProcesses
     );
 
 PHAPPAPI
-VOID PhDeselectAllProcessNodes(
+VOID
+NTAPI
+PhDeselectAllProcessNodes(
     VOID
     );
 
 PHAPPAPI
-VOID PhExpandAllProcessNodes(
+VOID
+NTAPI
+PhExpandAllProcessNodes(
     _In_ BOOLEAN Expand
     );
 
 PHAPPAPI
-VOID PhInvalidateAllProcessNodes(
+VOID
+NTAPI
+PhInvalidateAllProcessNodes(
     VOID
     );
 
 PHAPPAPI
-VOID PhSelectAndEnsureVisibleProcessNode(
+VOID
+NTAPI
+PhSelectAndEnsureVisibleProcessNode(
     _In_ PPH_PROCESS_NODE ProcessNode
+    );
+// end_phapppub
+
+VOID PhSelectAndEnsureVisibleProcessNodes(
+    _In_ PPH_PROCESS_NODE *ProcessNodes,
+    _In_ ULONG NumberOfProcessNodes
     );
 
 PPH_LIST PhGetProcessTreeListLines(
@@ -404,6 +443,10 @@ VOID PhCopyProcessTree(
 VOID PhWriteProcessTree(
     _Inout_ PPH_FILE_STREAM FileStream,
     _In_ ULONG Mode
+    );
+
+PPH_LIST PhDuplicateProcessNodeList(
+    VOID
     );
 
 // srvlist
@@ -427,6 +470,7 @@ VOID PhWriteProcessTree(
 #define PHSN_CONFIG 0x1
 #define PHSN_DESCRIPTION 0x2
 
+// begin_phapppub
 typedef struct _PH_SERVICE_NODE
 {
     PH_TREENEW_NODE Node;
@@ -434,11 +478,13 @@ typedef struct _PH_SERVICE_NODE
     PH_SH_STATE ShState;
 
     PPH_SERVICE_ITEM ServiceItem;
+// end_phapppub
 
     PH_STRINGREF TextCache[PHSVTLC_MAXIMUM];
 
     ULONG ValidMask;
 
+    WCHAR StartTypeText[12 + 24 + 1];
     // Config
     PPH_STRING BinaryPath;
     PPH_STRING LoadOrderGroup;
@@ -446,7 +492,9 @@ typedef struct _PH_SERVICE_NODE
     PPH_STRING Description;
 
     PPH_STRING TooltipText;
+// begin_phapppub
 } PH_SERVICE_NODE, *PPH_SERVICE_NODE;
+// end_phapppub
 
 VOID PhServiceTreeListInitialization(
     VOID
@@ -464,54 +512,76 @@ VOID PhSaveSettingsServiceTreeList(
     VOID
     );
 
+// begin_phapppub
 PHAPPAPI
-struct _PH_TN_FILTER_SUPPORT *PhGetFilterSupportServiceTreeList(
+struct _PH_TN_FILTER_SUPPORT *
+NTAPI
+PhGetFilterSupportServiceTreeList(
     VOID
     );
+// end_phapppub
 
 PPH_SERVICE_NODE PhAddServiceNode(
     _In_ PPH_SERVICE_ITEM ServiceItem,
     _In_ ULONG RunId
     );
 
+// begin_phapppub
 PHAPPAPI
-PPH_SERVICE_NODE PhFindServiceNode(
+PPH_SERVICE_NODE
+NTAPI
+PhFindServiceNode(
     _In_ PPH_SERVICE_ITEM ServiceItem
     );
+// end_phapppub
 
 VOID PhRemoveServiceNode(
     _In_ PPH_SERVICE_NODE ServiceNode
     );
 
+// begin_phapppub
 PHAPPAPI
-VOID PhUpdateServiceNode(
+VOID
+NTAPI
+PhUpdateServiceNode(
     _In_ PPH_SERVICE_NODE ServiceNode
     );
+// end_phapppub
 
 VOID PhTickServiceNodes(
     VOID
     );
 
+// begin_phapppub
 PHAPPAPI
-PPH_SERVICE_ITEM PhGetSelectedServiceItem(
+PPH_SERVICE_ITEM
+NTAPI
+PhGetSelectedServiceItem(
     VOID
     );
 
 PHAPPAPI
-VOID PhGetSelectedServiceItems(
+VOID
+NTAPI
+PhGetSelectedServiceItems(
     _Out_ PPH_SERVICE_ITEM **Services,
     _Out_ PULONG NumberOfServices
     );
 
 PHAPPAPI
-VOID PhDeselectAllServiceNodes(
+VOID
+NTAPI
+PhDeselectAllServiceNodes(
     VOID
     );
 
 PHAPPAPI
-VOID PhSelectAndEnsureVisibleServiceNode(
+VOID
+NTAPI
+PhSelectAndEnsureVisibleServiceNode(
     _In_ PPH_SERVICE_NODE ServiceNode
     );
+// end_phapppub
 
 VOID PhCopyServiceList(
     VOID
@@ -537,6 +607,7 @@ VOID PhWriteServiceList(
 #define PHNETLC_TIMESTAMP 8
 #define PHNETLC_MAXIMUM 9
 
+// begin_phapppub
 typedef struct _PH_NETWORK_NODE
 {
     PH_TREENEW_NODE Node;
@@ -544,6 +615,7 @@ typedef struct _PH_NETWORK_NODE
     PH_SH_STATE ShState;
 
     PPH_NETWORK_ITEM NetworkItem;
+// end_phapppub
 
     PH_STRINGREF TextCache[PHNETLC_MAXIMUM];
 
@@ -554,7 +626,9 @@ typedef struct _PH_NETWORK_NODE
     PPH_STRING TimeStampText;
 
     PPH_STRING TooltipText;
+// begin_phapppub
 } PH_NETWORK_NODE, *PPH_NETWORK_NODE;
+// end_phapppub
 
 VOID PhNetworkTreeListInitialization(
     VOID
@@ -572,22 +646,28 @@ VOID PhSaveSettingsNetworkTreeList(
     VOID
     );
 
+// begin_phapppub
 PHAPPAPI
-struct _PH_TN_FILTER_SUPPORT *PhGetFilterSupportNetworkTreeList(
+struct _PH_TN_FILTER_SUPPORT *
+NTAPI
+PhGetFilterSupportNetworkTreeList(
     VOID
     );
+// end_phapppub
 
 PPH_NETWORK_NODE PhAddNetworkNode(
     _In_ PPH_NETWORK_ITEM NetworkItem,
     _In_ ULONG RunId
     );
 
+// begin_phapppub
 PHAPPAPI
 PPH_NETWORK_NODE
 NTAPI
 PhFindNetworkNode(
     _In_ PPH_NETWORK_ITEM NetworkItem
     );
+// end_phapppub
 
 VOID PhRemoveNetworkNode(
     _In_ PPH_NETWORK_NODE NetworkNode
@@ -640,6 +720,7 @@ VOID PhWriteNetworkList(
 
 #define PHTHTLC_MAXIMUM 6
 
+// begin_phapppub
 typedef struct _PH_THREAD_NODE
 {
     PH_TREENEW_NODE Node;
@@ -648,6 +729,7 @@ typedef struct _PH_THREAD_NODE
 
     HANDLE ThreadId;
     PPH_THREAD_ITEM ThreadItem;
+// end_phapppub
 
     PH_STRINGREF TextCache[PHTHTLC_MAXIMUM];
 
@@ -657,7 +739,9 @@ typedef struct _PH_THREAD_NODE
     PPH_STRING CyclesDeltaText; // used for Context Switches Delta as well
     PPH_STRING StartAddressText;
     PPH_STRING PriorityText;
+// begin_phapppub
 } PH_THREAD_NODE, *PPH_THREAD_NODE;
+// end_phapppub
 
 typedef struct _PH_THREAD_LIST_CONTEXT
 {
@@ -679,7 +763,6 @@ typedef struct _PH_THREAD_LIST_CONTEXT
 VOID PhInitializeThreadList(
     _In_ HWND ParentWindowHandle,
     _In_ HWND TreeNewHandle,
-    _In_ PPH_PROCESS_ITEM ProcessItem,
     _Out_ PPH_THREAD_LIST_CONTEXT Context
     );
 
@@ -698,7 +781,7 @@ VOID PhSaveSettingsThreadList(
 PPH_THREAD_NODE PhAddThreadNode(
     _Inout_ PPH_THREAD_LIST_CONTEXT Context,
     _In_ PPH_THREAD_ITEM ThreadItem,
-    _In_ ULONG RunId
+    _In_ BOOLEAN FirstRun
     );
 
 PPH_THREAD_NODE PhFindThreadNode(
@@ -753,9 +836,13 @@ VOID PhDeselectAllThreadNodes(
 #define PHMOTLC_VERIFIEDSIGNER 10
 #define PHMOTLC_ASLR 11
 #define PHMOTLC_TIMESTAMP 12
+#define PHMOTLC_CFGUARD 13
+#define PHMOTLC_LOADTIME 14
+#define PHMOTLC_LOADREASON 15
 
-#define PHMOTLC_MAXIMUM 13
+#define PHMOTLC_MAXIMUM 16
 
+// begin_phapppub
 typedef struct _PH_MODULE_NODE
 {
     PH_TREENEW_NODE Node;
@@ -763,6 +850,7 @@ typedef struct _PH_MODULE_NODE
     PH_SH_STATE ShState;
 
     PPH_MODULE_ITEM ModuleItem;
+// end_phapppub
 
     PH_STRINGREF TextCache[PHMOTLC_MAXIMUM];
 
@@ -773,7 +861,10 @@ typedef struct _PH_MODULE_NODE
     PPH_STRING SizeText;
     WCHAR LoadCountText[PH_INT32_STR_LEN_1];
     PPH_STRING TimeStampText;
+    PPH_STRING LoadTimeText;
+// begin_phapppub
 } PH_MODULE_NODE, *PPH_MODULE_NODE;
+// end_phapppub
 
 typedef struct _PH_MODULE_LIST_CONTEXT
 {
@@ -795,7 +886,6 @@ typedef struct _PH_MODULE_LIST_CONTEXT
 VOID PhInitializeModuleList(
     _In_ HWND ParentWindowHandle,
     _In_ HWND TreeNewHandle,
-    _In_ PPH_PROCESS_ITEM ProcessItem,
     _Out_ PPH_MODULE_LIST_CONTEXT Context
     );
 
@@ -867,6 +957,7 @@ VOID PhDeselectAllModuleNodes(
 
 #define PHHNTLC_MAXIMUM 9
 
+// begin_phapppub
 typedef struct _PH_HANDLE_NODE
 {
     PH_TREENEW_NODE Node;
@@ -875,12 +966,15 @@ typedef struct _PH_HANDLE_NODE
 
     HANDLE Handle;
     PPH_HANDLE_ITEM HandleItem;
+// end_phapppub
 
     PH_STRINGREF TextCache[PHHNTLC_MAXIMUM];
 
     PPH_STRING GrantedAccessSymbolicText;
     WCHAR FileShareAccessText[4];
+// begin_phapppub
 } PH_HANDLE_NODE, *PPH_HANDLE_NODE;
+// end_phapppub
 
 typedef struct _PH_HANDLE_LIST_CONTEXT
 {
@@ -901,7 +995,6 @@ typedef struct _PH_HANDLE_LIST_CONTEXT
 VOID PhInitializeHandleList(
     _In_ HWND ParentWindowHandle,
     _In_ HWND TreeNewHandle,
-    _In_ PPH_PROCESS_ITEM ProcessItem,
     _Out_ PPH_HANDLE_LIST_CONTEXT Context
     );
 
@@ -959,6 +1052,117 @@ VOID PhGetSelectedHandleItems(
 
 VOID PhDeselectAllHandleNodes(
     _In_ PPH_HANDLE_LIST_CONTEXT Context
+    );
+
+// memlist
+
+// Columns
+
+#define PHMMTLC_BASEADDRESS 0
+#define PHMMTLC_TYPE 1
+#define PHMMTLC_SIZE 2
+#define PHMMTLC_PROTECTION 3
+#define PHMMTLC_USE 4
+#define PHMMTLC_TOTALWS 5
+#define PHMMTLC_PRIVATEWS 6
+#define PHMMTLC_SHAREABLEWS 7
+#define PHMMTLC_SHAREDWS 8
+#define PHMMTLC_LOCKEDWS 9
+#define PHMMTLC_COMMITTED 10
+#define PHMMTLC_PRIVATE 11
+
+#define PHMMTLC_MAXIMUM 12
+
+// begin_phapppub
+typedef struct _PH_MEMORY_NODE
+{
+    PH_TREENEW_NODE Node;
+
+    BOOLEAN IsAllocationBase;
+    BOOLEAN Reserved1;
+    USHORT Reserved2;
+    PPH_MEMORY_ITEM MemoryItem;
+
+    struct _PH_MEMORY_NODE *Parent;
+    PPH_LIST Children;
+// end_phapppub
+
+    PH_STRINGREF TextCache[PHMMTLC_MAXIMUM];
+
+    WCHAR BaseAddressText[PH_PTR_STR_LEN_1];
+    WCHAR TypeText[30];
+    PPH_STRING SizeText;
+    WCHAR ProtectionText[17];
+    PPH_STRING UseText;
+    PPH_STRING TotalWsText;
+    PPH_STRING PrivateWsText;
+    PPH_STRING ShareableWsText;
+    PPH_STRING SharedWsText;
+    PPH_STRING LockedWsText;
+    PPH_STRING CommittedText;
+    PPH_STRING PrivateText;
+// begin_phapppub
+} PH_MEMORY_NODE, *PPH_MEMORY_NODE;
+// end_phapppub
+
+typedef struct _PH_MEMORY_LIST_CONTEXT
+{
+    HWND ParentWindowHandle;
+    HWND TreeNewHandle;
+    ULONG TreeNewSortColumn;
+    PH_SORT_ORDER TreeNewSortOrder;
+    PH_CM_MANAGER Cm;
+    BOOLEAN HideFreeRegions;
+
+    PPH_LIST AllocationBaseNodeList; // Allocation base nodes (list should always be sorted by base address)
+    PPH_LIST RegionNodeList; // Memory region nodes
+} PH_MEMORY_LIST_CONTEXT, *PPH_MEMORY_LIST_CONTEXT;
+
+VOID PhInitializeMemoryList(
+    _In_ HWND ParentWindowHandle,
+    _In_ HWND TreeNewHandle,
+    _Out_ PPH_MEMORY_LIST_CONTEXT Context
+    );
+
+VOID PhDeleteMemoryList(
+    _In_ PPH_MEMORY_LIST_CONTEXT Context
+    );
+
+VOID PhLoadSettingsMemoryList(
+    _Inout_ PPH_MEMORY_LIST_CONTEXT Context
+    );
+
+VOID PhSaveSettingsMemoryList(
+    _Inout_ PPH_MEMORY_LIST_CONTEXT Context
+    );
+
+VOID PhSetOptionsMemoryList(
+    _Inout_ PPH_MEMORY_LIST_CONTEXT Context,
+    _In_ BOOLEAN HideFreeRegions
+    );
+
+VOID PhReplaceMemoryList(
+    _Inout_ PPH_MEMORY_LIST_CONTEXT Context,
+    _In_ PPH_MEMORY_ITEM_LIST List
+    );
+
+VOID PhUpdateMemoryNode(
+    _In_ PPH_MEMORY_LIST_CONTEXT Context,
+    _In_ PPH_MEMORY_NODE MemoryNode
+    );
+
+PPH_MEMORY_NODE PhGetSelectedMemoryNode(
+    _In_ PPH_MEMORY_LIST_CONTEXT Context
+    );
+
+VOID PhGetSelectedMemoryNodes(
+    _In_ PPH_MEMORY_LIST_CONTEXT Context,
+    _Out_ PPH_MEMORY_NODE **MemoryNodes,
+    _Out_ PULONG NumberOfMemoryNodes
+    );
+
+VOID PhDeselectAllMemoryNodes(
+    _In_ PPH_MEMORY_LIST_CONTEXT Context
     );
 
 #endif

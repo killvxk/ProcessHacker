@@ -21,7 +21,6 @@
  */
 
 #include "exttools.h"
-#include <notifico.h>
 
 #define GPU_ICON_ID 1
 #define DISK_ICON_ID 2
@@ -35,6 +34,13 @@ VOID EtpGpuIconUpdateCallback(
     _In_opt_ PVOID Context
     );
 
+BOOLEAN EtpGpuIconMessageCallback(
+    _In_ struct _PH_NF_ICON *Icon,
+    _In_ ULONG_PTR WParam,
+    _In_ ULONG_PTR LParam,
+    _In_opt_ PVOID Context
+    );
+
 VOID EtpDiskIconUpdateCallback(
     _In_ struct _PH_NF_ICON *Icon,
     _Out_ PVOID *NewIconOrBitmap,
@@ -43,11 +49,25 @@ VOID EtpDiskIconUpdateCallback(
     _In_opt_ PVOID Context
     );
 
+BOOLEAN EtpDiskIconMessageCallback(
+    _In_ struct _PH_NF_ICON *Icon,
+    _In_ ULONG_PTR WParam,
+    _In_ ULONG_PTR LParam,
+    _In_opt_ PVOID Context
+    );
+
 VOID EtpNetworkIconUpdateCallback(
     _In_ struct _PH_NF_ICON *Icon,
     _Out_ PVOID *NewIconOrBitmap,
     _Out_ PULONG Flags,
     _Out_ PPH_STRING *NewText,
+    _In_opt_ PVOID Context
+    );
+
+BOOLEAN EtpNetworkIconMessageCallback(
+    _In_ struct _PH_NF_ICON *Icon,
+    _In_ ULONG_PTR WParam,
+    _In_ ULONG_PTR LParam,
     _In_opt_ PVOID Context
     );
 
@@ -60,32 +80,35 @@ VOID EtRegisterNotifyIcons(
     data.MessageCallback = NULL;
 
     data.UpdateCallback = EtpGpuIconUpdateCallback;
+    data.MessageCallback = EtpGpuIconMessageCallback;
     PhPluginRegisterIcon(
         PluginInstance,
         GPU_ICON_ID,
         NULL,
         L"GPU History",
-        EtGpuEnabled ? 0 : PH_NF_ICON_UNAVAILABLE,
+        PH_NF_ICON_SHOW_MINIINFO | (EtGpuEnabled ? 0 : PH_NF_ICON_UNAVAILABLE),
         &data
         );
 
     data.UpdateCallback = EtpDiskIconUpdateCallback;
+    data.MessageCallback = EtpDiskIconMessageCallback;
     PhPluginRegisterIcon(
         PluginInstance,
         DISK_ICON_ID,
         NULL,
         L"Disk History",
-        EtEtwEnabled ? 0 : PH_NF_ICON_UNAVAILABLE,
+        PH_NF_ICON_SHOW_MINIINFO | (EtEtwEnabled ? 0 : PH_NF_ICON_UNAVAILABLE),
         &data
         );
 
     data.UpdateCallback = EtpNetworkIconUpdateCallback;
+    data.MessageCallback = EtpNetworkIconMessageCallback;
     PhPluginRegisterIcon(
         PluginInstance,
         NETWORK_ICON_ID,
         NULL,
         L"Network History",
-        EtEtwEnabled ? 0 : PH_NF_ICON_UNAVAILABLE,
+        PH_NF_ICON_SHOW_MINIINFO | (EtEtwEnabled ? 0 : PH_NF_ICON_UNAVAILABLE),
         &data
         );
 }
@@ -149,7 +172,7 @@ VOID EtpGpuIconUpdateCallback(
     // Text
 
     if (EtMaxGpuNodeHistory.Count != 0)
-        maxGpuProcessId = (HANDLE)PhGetItemCircularBuffer_ULONG(&EtMaxGpuNodeHistory, 0);
+        maxGpuProcessId = UlongToHandle(PhGetItemCircularBuffer_ULONG(&EtMaxGpuNodeHistory, 0));
     else
         maxGpuProcessId = NULL;
 
@@ -173,6 +196,27 @@ VOID EtpGpuIconUpdateCallback(
 
     *NewText = PhFormat(format, maxGpuProcessItem ? 8 : 3, 128);
     if (maxGpuProcessItem) PhDereferenceObject(maxGpuProcessItem);
+}
+
+BOOLEAN EtpGpuIconMessageCallback(
+    _In_ struct _PH_NF_ICON *Icon,
+    _In_ ULONG_PTR WParam,
+    _In_ ULONG_PTR LParam,
+    _In_opt_ PVOID Context
+    )
+{
+    switch (LOWORD(LParam))
+    {
+    case PH_NF_MSG_SHOWMINIINFOSECTION:
+        {
+            PPH_NF_MSG_SHOWMINIINFOSECTION_DATA data = (PVOID)WParam;
+
+            data->SectionName = L"GPU";
+        }
+        return TRUE;
+    }
+
+    return FALSE;
 }
 
 VOID EtpDiskIconUpdateCallback(
@@ -232,8 +276,8 @@ VOID EtpDiskIconUpdateCallback(
             max = lineData1[i] + lineData2[i];
     }
 
-    PhxfDivideSingle2U(lineData1, max, lineDataCount);
-    PhxfDivideSingle2U(lineData2, max, lineDataCount);
+    PhDivideSinglesBySingle(lineData1, max, lineDataCount);
+    PhDivideSinglesBySingle(lineData2, max, lineDataCount);
 
     drawInfo.LineDataCount = lineDataCount;
     drawInfo.LineData1 = lineData1;
@@ -253,7 +297,7 @@ VOID EtpDiskIconUpdateCallback(
     // Text
 
     if (EtMaxDiskHistory.Count != 0)
-        maxDiskProcessId = (HANDLE)PhGetItemCircularBuffer_ULONG(&EtMaxDiskHistory, 0);
+        maxDiskProcessId = UlongToHandle(PhGetItemCircularBuffer_ULONG(&EtMaxDiskHistory, 0));
     else
         maxDiskProcessId = NULL;
 
@@ -275,6 +319,27 @@ VOID EtpDiskIconUpdateCallback(
 
     *NewText = PhFormat(format, maxDiskProcessItem ? 6 : 4, 128);
     if (maxDiskProcessItem) PhDereferenceObject(maxDiskProcessItem);
+}
+
+BOOLEAN EtpDiskIconMessageCallback(
+    _In_ struct _PH_NF_ICON *Icon,
+    _In_ ULONG_PTR WParam,
+    _In_ ULONG_PTR LParam,
+    _In_opt_ PVOID Context
+    )
+{
+    switch (LOWORD(LParam))
+    {
+    case PH_NF_MSG_SHOWMINIINFOSECTION:
+        {
+            PPH_NF_MSG_SHOWMINIINFOSECTION_DATA data = (PVOID)WParam;
+
+            data->SectionName = L"Disk";
+        }
+        return TRUE;
+    }
+
+    return FALSE;
 }
 
 VOID EtpNetworkIconUpdateCallback(
@@ -334,8 +399,8 @@ VOID EtpNetworkIconUpdateCallback(
             max = lineData1[i] + lineData2[i];
     }
 
-    PhxfDivideSingle2U(lineData1, max, lineDataCount);
-    PhxfDivideSingle2U(lineData2, max, lineDataCount);
+    PhDivideSinglesBySingle(lineData1, max, lineDataCount);
+    PhDivideSinglesBySingle(lineData2, max, lineDataCount);
 
     drawInfo.LineDataCount = lineDataCount;
     drawInfo.LineData1 = lineData1;
@@ -355,7 +420,7 @@ VOID EtpNetworkIconUpdateCallback(
     // Text
 
     if (EtMaxNetworkHistory.Count != 0)
-        maxNetworkProcessId = (HANDLE)PhGetItemCircularBuffer_ULONG(&EtMaxNetworkHistory, 0);
+        maxNetworkProcessId = UlongToHandle(PhGetItemCircularBuffer_ULONG(&EtMaxNetworkHistory, 0));
     else
         maxNetworkProcessId = NULL;
 
@@ -377,4 +442,25 @@ VOID EtpNetworkIconUpdateCallback(
 
     *NewText = PhFormat(format, maxNetworkProcessItem ? 6 : 4, 128);
     if (maxNetworkProcessItem) PhDereferenceObject(maxNetworkProcessItem);
+}
+
+BOOLEAN EtpNetworkIconMessageCallback(
+    _In_ struct _PH_NF_ICON *Icon,
+    _In_ ULONG_PTR WParam,
+    _In_ ULONG_PTR LParam,
+    _In_opt_ PVOID Context
+    )
+{
+    switch (LOWORD(LParam))
+    {
+    case PH_NF_MSG_SHOWMINIINFOSECTION:
+        {
+            PPH_NF_MSG_SHOWMINIINFOSECTION_DATA data = (PVOID)WParam;
+
+            data->SectionName = L"Network";
+        }
+        return TRUE;
+    }
+
+    return FALSE;
 }

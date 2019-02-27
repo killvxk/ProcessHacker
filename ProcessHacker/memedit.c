@@ -2,7 +2,7 @@
  * Process Hacker -
  *   memory editor window
  *
- * Copyright (C) 2010-2011 wj32
+ * Copyright (C) 2010-2016 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -46,9 +46,10 @@ typedef struct _MEMORY_EDITOR_CONTEXT
     HWND HexEditHandle;
     PUCHAR Buffer;
     ULONG SelectOffset;
+    PPH_STRING Title;
+    ULONG Flags;
 
     BOOLEAN LoadCompleted;
-    BOOLEAN CreateFailed;
 } MEMORY_EDITOR_CONTEXT, *PMEMORY_EDITOR_CONTEXT;
 
 INT NTAPI PhpMemoryEditorCompareFunction(
@@ -71,7 +72,9 @@ VOID PhShowMemoryEditorDialog(
     _In_ PVOID BaseAddress,
     _In_ SIZE_T RegionSize,
     _In_ ULONG SelectOffset,
-    _In_ ULONG SelectLength
+    _In_ ULONG SelectLength,
+    _In_opt_ PPH_STRING Title,
+    _In_ ULONG Flags
     )
 {
     PMEMORY_EDITOR_CONTEXT context;
@@ -93,6 +96,8 @@ VOID PhShowMemoryEditorDialog(
         context->BaseAddress = BaseAddress;
         context->RegionSize = RegionSize;
         context->SelectOffset = SelectOffset;
+        PhSwapReference(&context->Title, Title);
+        context->Flags = Flags;
 
         context->WindowHandle = CreateDialogParam(
             PhInstanceHandle,
@@ -102,10 +107,9 @@ VOID PhShowMemoryEditorDialog(
             (LPARAM)context
             );
 
-        if (context->CreateFailed)
+        if (!context->LoadCompleted)
         {
             DestroyWindow(context->WindowHandle);
-            context->WindowHandle = NULL;
             return;
         }
 
@@ -128,6 +132,10 @@ VOID PhShowMemoryEditorDialog(
 
         if (SelectOffset != -1)
             PostMessage(context->WindowHandle, WM_PH_SELECT_OFFSET, SelectOffset, SelectLength);
+
+        // Just in case.
+        if ((Flags & PH_MEMORY_EDITOR_UNMAP_VIEW_OF_SECTION) && ProcessId == NtCurrentProcessId())
+            NtUnmapViewOfSection(NtCurrentProcess(), BaseAddress);
     }
 }
 
@@ -170,13 +178,18 @@ INT_PTR CALLBACK PhpMemoryEditorDlgProc(
         {
             NTSTATUS status;
 
+            if (context->Title)
+            {
+                SetWindowText(hwndDlg, context->Title->Buffer);
+            }
+            else
             {
                 PPH_PROCESS_ITEM processItem;
 
                 if (processItem = PhReferenceProcessItem(context->ProcessId))
                 {
                     SetWindowText(hwndDlg, PhaFormatString(L"%s (%u) (0x%Ix - 0x%Ix)",
-                        processItem->ProcessName->Buffer, (ULONG)context->ProcessId,
+                        processItem->ProcessName->Buffer, HandleToUlong(context->ProcessId),
                         context->BaseAddress, (ULONG_PTR)context->BaseAddress + context->RegionSize)->Buffer);
                     PhDereferenceObject(processItem);
                 }
@@ -187,7 +200,6 @@ INT_PTR CALLBACK PhpMemoryEditorDlgProc(
             if (context->RegionSize > 1024 * 1024 * 1024) // 1 GB
             {
                 PhShowError(NULL, L"Unable to edit the memory region because it is too large.");
-                context->CreateFailed = TRUE;
                 return TRUE;
             }
 
@@ -204,7 +216,6 @@ INT_PTR CALLBACK PhpMemoryEditorDlgProc(
                     )))
                 {
                     PhShowStatus(NULL, L"Unable to open the process", status, 0);
-                    context->CreateFailed = TRUE;
                     return TRUE;
                 }
             }
@@ -214,7 +225,6 @@ INT_PTR CALLBACK PhpMemoryEditorDlgProc(
             if (!context->Buffer)
             {
                 PhShowError(NULL, L"Unable to allocate memory for the buffer.");
-                context->CreateFailed = TRUE;
                 return TRUE;
             }
 
@@ -227,7 +237,6 @@ INT_PTR CALLBACK PhpMemoryEditorDlgProc(
                 )))
             {
                 PhShowStatus(PhMainWndHandle, L"Unable to read memory", status, 0);
-                context->CreateFailed = TRUE;
                 return TRUE;
             }
 
@@ -235,6 +244,8 @@ INT_PTR CALLBACK PhpMemoryEditorDlgProc(
                 PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
             PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDC_SAVE), NULL,
                 PH_ANCHOR_RIGHT | PH_ANCHOR_BOTTOM);
+            PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDC_BYTESPERROW), NULL,
+                PH_ANCHOR_BOTTOM | PH_ANCHOR_LEFT);
             PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDC_GOTO), NULL,
                 PH_ANCHOR_BOTTOM | PH_ANCHOR_LEFT);
             PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDC_WRITE), NULL,
@@ -277,6 +288,27 @@ INT_PTR CALLBACK PhpMemoryEditorDlgProc(
                 PhSetIntegerPairSetting(L"MemEditSize", windowRectangle.Size);
             }
 
+            {
+                PWSTR bytesPerRowStrings[7];
+                ULONG i;
+                ULONG bytesPerRow;
+
+                for (i = 0; i < sizeof(bytesPerRowStrings) / sizeof(PWSTR); i++)
+                    bytesPerRowStrings[i] = PhaFormatString(L"%u bytes per row", 1 << (2 + i))->Buffer;
+
+                PhAddComboBoxStrings(GetDlgItem(hwndDlg, IDC_BYTESPERROW),
+                    bytesPerRowStrings, sizeof(bytesPerRowStrings) / sizeof(PWSTR));
+
+                bytesPerRow = PhGetIntegerSetting(L"MemEditBytesPerRow");
+
+                if (bytesPerRow >= 4)
+                {
+                    HexEdit_SetBytesPerRow(context->HexEditHandle, bytesPerRow);
+                    PhSelectComboBoxString(GetDlgItem(hwndDlg, IDC_BYTESPERROW),
+                        PhaFormatString(L"%u bytes per row", bytesPerRow)->Buffer, FALSE);
+                }
+            }
+
             context->LoadCompleted = TRUE;
         }
         break;
@@ -295,13 +327,17 @@ INT_PTR CALLBACK PhpMemoryEditorDlgProc(
 
             if (context->Buffer) PhFreePage(context->Buffer);
             if (context->ProcessHandle) NtClose(context->ProcessHandle);
+            PhClearReference(&context->Title);
+
+            if ((context->Flags & PH_MEMORY_EDITOR_UNMAP_VIEW_OF_SECTION) && context->ProcessId == NtCurrentProcessId())
+                NtUnmapViewOfSection(NtCurrentProcess(), context->BaseAddress);
 
             PhFree(context);
         }
         break;
     case WM_SHOWWINDOW:
         {
-            SetFocus(context->HexEditHandle);
+            SendMessage(hwndDlg, WM_NEXTDLGCTL, (WPARAM)context->HexEditHandle, TRUE);
         }
         break;
     case WM_COMMAND:
@@ -326,7 +362,7 @@ INT_PTR CALLBACK PhpMemoryEditorDlgProc(
 
                     PhSetFileDialogFilter(fileDialog, filters, sizeof(filters) / sizeof(PH_FILETYPE_FILTER));
 
-                    if (processItem = PhReferenceProcessItem(context->ProcessId))
+                    if (!context->Title && (processItem = PhReferenceProcessItem(context->ProcessId)))
                     {
                         PhSetFileDialogFileName(fileDialog,
                             PhaFormatString(L"%s_0x%Ix-0x%Ix.bin", processItem->ProcessName->Buffer,
@@ -345,7 +381,7 @@ INT_PTR CALLBACK PhpMemoryEditorDlgProc(
                         PPH_FILE_STREAM fileStream;
 
                         fileName = PhGetFileDialogFileName(fileDialog);
-                        PhaDereferenceObject(fileName);
+                        PhAutoDereferenceObject(fileName);
 
                         if (NT_SUCCESS(status = PhCreateFileStream(
                             &fileStream,
@@ -373,7 +409,7 @@ INT_PTR CALLBACK PhpMemoryEditorDlgProc(
 
                     while (PhaChoiceDialog(
                         hwndDlg,
-                        L"Goto Offset",
+                        L"Go to Offset",
                         L"Enter an offset:",
                         NULL,
                         0,
@@ -397,7 +433,7 @@ INT_PTR CALLBACK PhpMemoryEditorDlgProc(
                                 continue;
                             }
 
-                            SetFocus(context->HexEditHandle);
+                            SendMessage(hwndDlg, WM_NEXTDLGCTL, (WPARAM)context->HexEditHandle, TRUE);
                             HexEdit_SetSel(context->HexEditHandle, (LONG)offset, (LONG)offset);
                             break;
                         }
@@ -436,6 +472,25 @@ INT_PTR CALLBACK PhpMemoryEditorDlgProc(
                     }
 
                     InvalidateRect(context->HexEditHandle, NULL, TRUE);
+                }
+                break;
+            case IDC_BYTESPERROW:
+                if (HIWORD(wParam) == CBN_SELCHANGE)
+                {
+                    PPH_STRING bytesPerRowString = PhaGetDlgItemText(hwndDlg, IDC_BYTESPERROW);
+                    PH_STRINGREF firstPart;
+                    PH_STRINGREF secondPart;
+                    ULONG64 bytesPerRow64;
+
+                    if (PhSplitStringRefAtChar(&bytesPerRowString->sr, ' ', &firstPart, &secondPart))
+                    {
+                        if (PhStringToInteger64(&firstPart, 10, &bytesPerRow64))
+                        {
+                            PhSetIntegerSetting(L"MemEditBytesPerRow", (ULONG)bytesPerRow64);
+                            HexEdit_SetBytesPerRow(context->HexEditHandle, (ULONG)bytesPerRow64);
+                            SendMessage(hwndDlg, WM_NEXTDLGCTL, (WPARAM)context->HexEditHandle, TRUE);
+                        }
+                    }
                 }
                 break;
             }

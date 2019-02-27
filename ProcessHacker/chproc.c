@@ -106,7 +106,7 @@ static VOID PhpRefreshProcessList(
         INT imageIndex;
 
         if (process->UniqueProcessId != SYSTEM_IDLE_PROCESS_ID)
-            name = PhCreateStringEx(process->ImageName.Buffer, process->ImageName.Length);
+            name = PhCreateStringFromUnicodeString(&process->ImageName);
         else
             name = PhCreateString(SYSTEM_IDLE_PROCESS_NAME);
 
@@ -136,10 +136,7 @@ static VOID PhpRefreshProcessList(
         }
 
         if (process->UniqueProcessId == SYSTEM_IDLE_PROCESS_ID && !userName && PhLocalSystemName)
-        {
-            userName = PhLocalSystemName;
-            PhReferenceObject(userName);
-        }
+            PhSetReference(&userName, PhLocalSystemName);
 
         if (WINDOWS_HAS_IMAGE_FILE_NAME_BY_PROCESS_ID && process->UniqueProcessId != SYSTEM_PROCESS_ID)
             PhGetProcessImageFileNameByProcessId(process->UniqueProcessId, &fileName);
@@ -148,7 +145,7 @@ static VOID PhpRefreshProcessList(
             fileName = PhGetKernelFileName();
 
         if (fileName)
-            PhSwapReference2(&fileName, PhGetFileName(fileName));
+            PhMoveReference(&fileName, PhGetFileName(fileName));
 
         icon = PhGetFileShellIcon(PhGetString(fileName), L".exe", FALSE);
 
@@ -161,7 +158,7 @@ static VOID PhpRefreshProcessList(
         }
 
         // PID
-        PhPrintUInt32(processIdString, (ULONG)process->UniqueProcessId);
+        PhPrintUInt32(processIdString, HandleToUlong(process->UniqueProcessId));
         PhSetListViewSubItem(Context->ListViewHandle, lvItemIndex, 1, processIdString);
 
         // User Name

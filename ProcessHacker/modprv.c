@@ -2,7 +2,7 @@
  * Process Hacker -
  *   module provider
  *
- * Copyright (C) 2009-2013 wj32
+ * Copyright (C) 2009-2015 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -20,8 +20,8 @@
  * along with Process Hacker.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#define PH_MODPRV_PRIVATE
 #include <phapp.h>
+#include <verify.h>
 #include <extmgri.h>
 
 typedef struct _PH_MODULE_QUERY_DATA
@@ -60,21 +60,8 @@ BOOLEAN PhModuleProviderInitialization(
     VOID
     )
 {
-    if (!NT_SUCCESS(PhCreateObjectType(
-        &PhModuleProviderType,
-        L"ModuleProvider",
-        0,
-        PhpModuleProviderDeleteProcedure
-        )))
-        return FALSE;
-
-    if (!NT_SUCCESS(PhCreateObjectType(
-        &PhModuleItemType,
-        L"ModuleItem",
-        0,
-        PhpModuleItemDeleteProcedure
-        )))
-        return FALSE;
+    PhModuleProviderType = PhCreateObjectType(L"ModuleProvider", 0, PhpModuleProviderDeleteProcedure);
+    PhModuleItemType = PhCreateObjectType(L"ModuleItem", 0, PhpModuleItemDeleteProcedure);
 
     return TRUE;
 }
@@ -86,13 +73,10 @@ PPH_MODULE_PROVIDER PhCreateModuleProvider(
     NTSTATUS status;
     PPH_MODULE_PROVIDER moduleProvider;
 
-    if (!NT_SUCCESS(PhCreateObject(
-        &moduleProvider,
-        sizeof(PH_MODULE_PROVIDER),
-        0,
+    moduleProvider = PhCreateObject(
+        PhEmGetObjectSize(EmModuleProviderType, sizeof(PH_MODULE_PROVIDER)),
         PhModuleProviderType
-        )))
-        return NULL;
+        );
 
     moduleProvider->ModuleHashtable = PhCreateHashtable(
         sizeof(PPH_MODULE_ITEM),
@@ -139,6 +123,8 @@ PPH_MODULE_PROVIDER PhCreateModuleProvider(
 
     RtlInitializeSListHead(&moduleProvider->QueryListHead);
 
+    PhEmCallObjectOperation(EmModuleProviderType, moduleProvider, EmObjectCreate);
+
     return moduleProvider;
 }
 
@@ -148,6 +134,8 @@ VOID PhpModuleProviderDeleteProcedure(
     )
 {
     PPH_MODULE_PROVIDER moduleProvider = (PPH_MODULE_PROVIDER)Object;
+
+    PhEmCallObjectOperation(EmModuleProviderType, moduleProvider, EmObjectDelete);
 
     // Dereference all module items (we referenced them
     // when we added them to the hashtable).
@@ -188,14 +176,10 @@ PPH_MODULE_ITEM PhCreateModuleItem(
 {
     PPH_MODULE_ITEM moduleItem;
 
-    if (!NT_SUCCESS(PhCreateObject(
-        &moduleItem,
+    moduleItem = PhCreateObject(
         PhEmGetObjectSize(EmModuleItemType, sizeof(PH_MODULE_ITEM)),
-        0,
         PhModuleItemType
-        )))
-        return NULL;
-
+        );
     memset(moduleItem, 0, sizeof(PH_MODULE_ITEM));
     PhEmCallObjectOperation(EmModuleItemType, moduleItem, EmObjectCreate);
 
@@ -233,11 +217,7 @@ ULONG NTAPI PhpModuleHashtableHashFunction(
 {
     PVOID baseAddress = (*(PPH_MODULE_ITEM *)Entry)->BaseAddress;
 
-#ifdef _M_IX86
-    return PhHashInt32((ULONG)baseAddress);
-#else
-    return PhHashInt64((ULONGLONG)baseAddress);
-#endif
+    return PhHashIntPtr((ULONG_PTR)baseAddress);
 }
 
 PPH_MODULE_ITEM PhReferenceModuleItem(
@@ -283,7 +263,7 @@ VOID PhDereferenceAllModuleItems(
 
     PhAcquireFastLockExclusive(&ModuleProvider->ModuleHashtableLock);
 
-    while (PhEnumHashtable(ModuleProvider->ModuleHashtable, (PPVOID)&moduleItem, &enumerationKey))
+    while (PhEnumHashtable(ModuleProvider->ModuleHashtable, (PVOID *)&moduleItem, &enumerationKey))
     {
         PhDereferenceObject(*moduleItem);
     }
@@ -386,7 +366,7 @@ VOID PhModuleProviderUpdate(
         ULONG enumerationKey = 0;
         PPH_MODULE_ITEM *moduleItem;
 
-        while (PhEnumHashtable(moduleProvider->ModuleHashtable, (PPVOID)&moduleItem, &enumerationKey))
+        while (PhEnumHashtable(moduleProvider->ModuleHashtable, (PVOID *)&moduleItem, &enumerationKey))
         {
             BOOLEAN found = FALSE;
 
@@ -469,8 +449,9 @@ VOID PhModuleProviderUpdate(
             moduleItem->Size = module->Size;
             moduleItem->Flags = module->Flags;
             moduleItem->Type = module->Type;
-            moduleItem->Reserved = 0;
+            moduleItem->LoadReason = module->LoadReason;
             moduleItem->LoadCount = module->LoadCount;
+            moduleItem->LoadTime = module->LoadTime;
 
             moduleItem->Name = module->Name;
             PhReferenceObject(moduleItem->Name);
@@ -505,6 +486,8 @@ VOID PhModuleProviderUpdate(
                 //
                 // 1. It (should be) faster than opening the file and mapping it in, and
                 // 2. It contains the correct original image base relocated by ASLR, if present.
+
+                moduleItem->Flags &= ~LDRP_IMAGE_NOT_AT_BASE;
 
                 if (NT_SUCCESS(PhLoadRemoteMappedImage(moduleProvider->ProcessHandle, moduleItem->BaseAddress, &remoteMappedImage)))
                 {

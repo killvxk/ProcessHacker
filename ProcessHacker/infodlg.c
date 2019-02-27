@@ -105,7 +105,7 @@ static INT_PTR CALLBACK PhpInformationDlgProc(
                     if (selStart == selEnd)
                     {
                         // Select and copy the entire string.
-                        PhInitializeStringRef(&string, buffer);
+                        PhInitializeStringRefLongHint(&string, buffer);
                         Edit_SetSel(editControl, 0, -1);
                     }
                     else
@@ -115,7 +115,7 @@ static INT_PTR CALLBACK PhpInformationDlgProc(
                     }
 
                     PhSetClipboardString(hwndDlg, &string);
-                    SetFocus(editControl);
+                    SendMessage(hwndDlg, WM_NEXTDLGCTL, (WPARAM)editControl, TRUE);
                 }
                 break;
             case IDC_SAVE:
@@ -139,7 +139,7 @@ static INT_PTR CALLBACK PhpInformationDlgProc(
                         PPH_FILE_STREAM fileStream;
 
                         fileName = PhGetFileDialogFileName(fileDialog);
-                        PhaDereferenceObject(fileName);
+                        PhAutoDereferenceObject(fileName);
 
                         if (NT_SUCCESS(status = PhCreateFileStream(
                             &fileStream,
@@ -152,8 +152,9 @@ static INT_PTR CALLBACK PhpInformationDlgProc(
                         {
                             PH_STRINGREF string;
 
+                            PhWriteStringAsUtf8FileStream(fileStream, &PhUnicodeByteOrderMark);
                             PhInitializeStringRef(&string, (PWSTR)GetProp(hwndDlg, L"String"));
-                            PhWriteStringAsAnsiFileStream(fileStream, &string);
+                            PhWriteStringAsUtf8FileStream(fileStream, &string);
                             PhDereferenceObject(fileStream);
                         }
 

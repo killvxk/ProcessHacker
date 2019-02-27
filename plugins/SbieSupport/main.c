@@ -52,7 +52,7 @@ VOID NTAPI MenuItemCallback(
     _In_opt_ PVOID Context
     );
 
-VOID NTAPI MainWindowShowingCallback(
+VOID NTAPI MainMenuInitializingCallback(
     _In_opt_ PVOID Parameter,
     _In_opt_ PVOID Context
     );
@@ -93,7 +93,7 @@ PPH_PLUGIN PluginInstance;
 PH_CALLBACK_REGISTRATION PluginLoadCallbackRegistration;
 PH_CALLBACK_REGISTRATION PluginShowOptionsCallbackRegistration;
 PH_CALLBACK_REGISTRATION PluginMenuItemCallbackRegistration;
-PH_CALLBACK_REGISTRATION MainWindowShowingCallbackRegistration;
+PH_CALLBACK_REGISTRATION MainMenuInitializingCallbackRegistration;
 PH_CALLBACK_REGISTRATION ProcessesUpdatedCallbackRegistration;
 PH_CALLBACK_REGISTRATION GetProcessHighlightingColorCallbackRegistration;
 PH_CALLBACK_REGISTRATION GetProcessTooltipTextCallbackRegistration;
@@ -122,7 +122,7 @@ LOGICAL DllMain(
         {
             PPH_PLUGIN_INFORMATION info;
 
-            PluginInstance = PhRegisterPlugin(L"ProcessHacker.SbieSupport", Instance, &info);
+            PluginInstance = PhRegisterPlugin(PLUGIN_NAME, Instance, &info);
 
             if (!PluginInstance)
                 return FALSE;
@@ -130,6 +130,7 @@ LOGICAL DllMain(
             info->DisplayName = L"Sandboxie Support";
             info->Author = L"wj32";
             info->Description = L"Provides functionality for sandboxed processes.";
+            info->Url = L"http://processhacker.sf.net/forums/viewtopic.php?t=1115";
             info->HasOptions = TRUE;
 
             PhRegisterCallback(
@@ -152,10 +153,10 @@ LOGICAL DllMain(
                 );
 
             PhRegisterCallback(
-                PhGetGeneralCallback(GeneralCallbackMainWindowShowing),
-                MainWindowShowingCallback,
+                PhGetGeneralCallback(GeneralCallbackMainMenuInitializing),
+                MainMenuInitializingCallback,
                 NULL,
-                &MainWindowShowingCallbackRegistration
+                &MainMenuInitializingCallbackRegistration
                 );
             PhRegisterCallback(
                 PhGetGeneralCallback(GeneralCallbackProcessesUpdated),
@@ -179,7 +180,7 @@ LOGICAL DllMain(
             {
                 static PH_SETTING_CREATE settings[] =
                 {
-                    { StringSettingType, L"ProcessHacker.SbieSupport.SbieDllPath", L"C:\\Program Files\\Sandboxie\\SbieDll.dll" }
+                    { StringSettingType, SETTING_NAME_SBIE_DLL_PATH, L"C:\\Program Files\\Sandboxie\\SbieDll.dll" }
                 };
 
                 PhAddSettings(settings, sizeof(settings) / sizeof(PH_SETTING_CREATE));
@@ -203,7 +204,7 @@ ULONG NTAPI BoxedProcessesHashFunction(
     _In_ PVOID Entry
     )
 {
-    return (ULONG)((PBOXED_PROCESS)Entry)->ProcessId / 4;
+    return HandleToUlong(((PBOXED_PROCESS)Entry)->ProcessId) / 4;
 }
 
 VOID NTAPI LoadCallback(
@@ -223,14 +224,14 @@ VOID NTAPI LoadCallback(
         32
         );
 
-    sbieDllPath = PhGetStringSetting(L"ProcessHacker.SbieSupport.SbieDllPath");
+    sbieDllPath = PhGetStringSetting(SETTING_NAME_SBIE_DLL_PATH);
     module = LoadLibrary(sbieDllPath->Buffer);
     PhDereferenceObject(sbieDllPath);
 
-    SbieApi_QueryBoxPath = (PVOID)GetProcAddress(module, SbieApi_QueryBoxPath_Name);
-    SbieApi_EnumBoxes = (PVOID)GetProcAddress(module, SbieApi_EnumBoxes_Name);
-    SbieApi_EnumProcessEx = (PVOID)GetProcAddress(module, SbieApi_EnumProcessEx_Name);
-    SbieDll_KillAll = (PVOID)GetProcAddress(module, SbieDll_KillAll_Name);
+    SbieApi_QueryBoxPath = PhGetProcedureAddress(module, SbieApi_QueryBoxPath_Name, 0);
+    SbieApi_EnumBoxes = PhGetProcedureAddress(module, SbieApi_EnumBoxes_Name, 0);
+    SbieApi_EnumProcessEx = PhGetProcedureAddress(module, SbieApi_EnumProcessEx_Name, 0);
+    SbieDll_KillAll = PhGetProcedureAddress(module, SbieDll_KillAll_Name, 0);
 
     if (NT_SUCCESS(RtlCreateTimerQueue(&timerQueueHandle)))
     {
@@ -296,15 +297,20 @@ VOID NTAPI MenuItemCallback(
     }
 }
 
-VOID NTAPI MainWindowShowingCallback(
+VOID NTAPI MainMenuInitializingCallback(
     _In_opt_ PVOID Parameter,
     _In_opt_ PVOID Context
     )
 {
-    PhPluginAddMenuItem(PluginInstance, PH_MENU_ITEM_LOCATION_TOOLS, L"$",
-        0, L"-", NULL);
-    PhPluginAddMenuItem(PluginInstance, PH_MENU_ITEM_LOCATION_TOOLS, L"$",
-        1, L"Terminate Sandboxed Processes", NULL);
+    PPH_PLUGIN_MENU_INFORMATION menuInfo = Parameter;
+
+    if (!SbieDll_KillAll)
+        return;
+    if (menuInfo->u.MainMenu.SubMenuIndex != PH_MENU_ITEM_LOCATION_TOOLS)
+        return;
+
+    PhInsertEMenuItem(menuInfo->Menu, PhPluginCreateEMenuItem(PluginInstance, PH_EMENU_SEPARATOR, 0, L"", NULL), -1);
+    PhInsertEMenuItem(menuInfo->Menu, PhPluginCreateEMenuItem(PluginInstance, 0, 1, L"Terminate Sandboxed Processes", NULL), -1);
 }
 
 VOID NTAPI ProcessesUpdatedCallback(
@@ -417,7 +423,7 @@ VOID NTAPI RefreshSandboxieInfo(
             {
                 BOXED_PROCESS boxedProcess;
 
-                boxedProcess.ProcessId = ULongToHandle(*pid);
+                boxedProcess.ProcessId = UlongToHandle(*pid);
                 memcpy(boxedProcess.BoxName, boxName, sizeof(boxName));
 
                 PhAddEntryHashtable(BoxedProcessesHashtable, &boxedProcess);
@@ -493,7 +499,7 @@ INT_PTR CALLBACK OptionsDlgProc(
         {
             PPH_STRING sbieDllPath;
 
-            sbieDllPath = PhGetStringSetting(L"ProcessHacker.SbieSupport.SbieDllPath");
+            sbieDllPath = PhGetStringSetting(SETTING_NAME_SBIE_DLL_PATH);
             SetDlgItemText(hwndDlg, IDC_SBIEDLLPATH, sbieDllPath->Buffer);
             PhDereferenceObject(sbieDllPath);
         }
@@ -507,8 +513,8 @@ INT_PTR CALLBACK OptionsDlgProc(
                 break;
             case IDOK:
                 {
-                    PhSetStringSetting2(L"ProcessHacker.SbieSupport.SbieDllPath",
-                        &PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_SBIEDLLPATH)->sr);
+                    PhSetStringSetting2(SETTING_NAME_SBIE_DLL_PATH,
+                        &PhaGetDlgItemText(hwndDlg, IDC_SBIEDLLPATH)->sr);
 
                     EndDialog(hwndDlg, IDOK);
                 }
@@ -526,7 +532,7 @@ INT_PTR CALLBACK OptionsDlgProc(
                     fileDialog = PhCreateOpenFileDialog();
                     PhSetFileDialogFilter(fileDialog, filters, sizeof(filters) / sizeof(PH_FILETYPE_FILTER));
 
-                    fileName = PhGetFileName(PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_SBIEDLLPATH));
+                    fileName = PhGetFileName(PhaGetDlgItemText(hwndDlg, IDC_SBIEDLLPATH));
                     PhSetFileDialogFileName(fileDialog, fileName->Buffer);
                     PhDereferenceObject(fileName);
 

@@ -290,12 +290,12 @@ INT_PTR CALLBACK PhpRunAsDlgProc(
             SetDlgItemText(hwndDlg, IDC_DESKTOP, L"WinSta0\\Default");
 
             SetDlgItemText(hwndDlg, IDC_PROGRAM,
-                ((PPH_STRING)PHA_DEREFERENCE(PhGetStringSetting(L"RunAsProgram")))->Buffer);
+                ((PPH_STRING)PhAutoDereferenceObject(PhGetStringSetting(L"RunAsProgram")))->Buffer);
 
             if (!context->ProcessId)
             {
                 SetDlgItemText(hwndDlg, IDC_USERNAME,
-                    ((PPH_STRING)PHA_DEREFERENCE(PhGetStringSetting(L"RunAsUserName")))->Buffer);
+                    ((PPH_STRING)PhAutoDereferenceObject(PhGetStringSetting(L"RunAsUserName")))->Buffer);
 
                 // Fire the user name changed event so we can fix the logon type.
                 SendMessage(hwndDlg, WM_COMMAND, MAKEWPARAM(IDC_USERNAME, CBN_EDITCHANGE), 0);
@@ -341,7 +341,7 @@ INT_PTR CALLBACK PhpRunAsDlgProc(
                 EnableWindow(GetDlgItem(hwndDlg, IDC_TYPE), FALSE);
             }
 
-            SetFocus(GetDlgItem(hwndDlg, IDC_PROGRAM));
+            SendMessage(hwndDlg, WM_NEXTDLGCTL, (WPARAM)GetDlgItem(hwndDlg, IDC_PROGRAM), TRUE);
             Edit_SetSel(GetDlgItem(hwndDlg, IDC_PROGRAM), 0, -1);
 
             //if (!PhElevated)
@@ -378,9 +378,9 @@ INT_PTR CALLBACK PhpRunAsDlgProc(
                     PPH_STRING desktopName;
                     BOOLEAN useLinkedToken;
 
-                    program = PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_PROGRAM);
-                    userName = PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_USERNAME);
-                    logonTypeString = PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_TYPE);
+                    program = PhaGetDlgItemText(hwndDlg, IDC_PROGRAM);
+                    userName = PhaGetDlgItemText(hwndDlg, IDC_USERNAME);
+                    logonTypeString = PhaGetDlgItemText(hwndDlg, IDC_TYPE);
 
                     // Fix up the user name if it doesn't have a domain.
                     if (PhFindCharInString(userName, 0, '\\') == -1)
@@ -394,7 +394,7 @@ INT_PTR CALLBACK PhpRunAsDlgProc(
 
                             if (newUserName)
                             {
-                                PhaDereferenceObject(newUserName);
+                                PhAutoDereferenceObject(newUserName);
                                 userName = newUserName;
                             }
 
@@ -408,7 +408,7 @@ INT_PTR CALLBACK PhpRunAsDlgProc(
                         password = NULL;
 
                     sessionId = GetDlgItemInt(hwndDlg, IDC_SESSIONID, NULL, FALSE);
-                    desktopName = PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_DESKTOP);
+                    desktopName = PhaGetDlgItemText(hwndDlg, IDC_DESKTOP);
 
                     if (WINDOWS_HAS_UAC)
                         useLinkedToken = Button_GetCheck(GetDlgItem(hwndDlg, IDC_TOGGLEELEVATION)) == BST_CHECKED;
@@ -513,7 +513,7 @@ INT_PTR CALLBACK PhpRunAsDlgProc(
 
                     fileDialog = PhCreateOpenFileDialog();
                     PhSetFileDialogFilter(fileDialog, filters, sizeof(filters) / sizeof(PH_FILETYPE_FILTER));
-                    PhSetFileDialogFileName(fileDialog, PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_PROGRAM)->Buffer);
+                    PhSetFileDialogFileName(fileDialog, PhaGetDlgItemText(hwndDlg, IDC_PROGRAM)->Buffer);
 
                     if (PhShowFileDialog(hwndDlg, fileDialog))
                     {
@@ -533,14 +533,14 @@ INT_PTR CALLBACK PhpRunAsDlgProc(
 
                     if (!context->ProcessId && HIWORD(wParam) == CBN_SELCHANGE)
                     {
-                        userName = PHA_DEREFERENCE(PhGetComboBoxString(GetDlgItem(hwndDlg, IDC_USERNAME), -1));
+                        userName = PhAutoDereferenceObject(PhGetComboBoxString(GetDlgItem(hwndDlg, IDC_USERNAME), -1));
                     }
                     else if (!context->ProcessId && (
                         HIWORD(wParam) == CBN_EDITCHANGE ||
                         HIWORD(wParam) == CBN_CLOSEUP
                         ))
                     {
-                        userName = PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_USERNAME);
+                        userName = PhaGetDlgItemText(hwndDlg, IDC_USERNAME);
                     }
 
                     if (userName)
@@ -638,8 +638,8 @@ INT_PTR CALLBACK PhpRunAsDlgProc(
                             }
 
                             PhInsertEMenuItem(sessionsMenu,
-                                PhCreateEMenuItem(0, 0, menuString->Buffer, NULL, (PVOID)sessions[i].SessionId), -1);
-                            PhaDereferenceObject(menuString);
+                                PhCreateEMenuItem(0, 0, menuString->Buffer, NULL, UlongToPtr(sessions[i].SessionId)), -1);
+                            PhAutoDereferenceObject(menuString);
                         }
 
                         WinStationFreeMemory(sessions);
@@ -660,7 +660,7 @@ INT_PTR CALLBACK PhpRunAsDlgProc(
                             SetDlgItemInt(
                                 hwndDlg,
                                 IDC_SESSIONID,
-                                (ULONG)selectedItem->Context,
+                                PtrToUlong(selectedItem->Context),
                                 FALSE
                                 );
                         }
@@ -937,7 +937,7 @@ NTSTATUS PhExecuteRunAsCommand2(
     UNICODE_STRING portNameUs;
 
     memset(&parameters, 0, sizeof(PH_RUNAS_SERVICE_PARAMETERS));
-    parameters.ProcessId = (ULONG)ProcessIdWithToken;
+    parameters.ProcessId = HandleToUlong(ProcessIdWithToken);
     parameters.UserName = UserName;
     parameters.Password = Password;
     parameters.LogonType = LogonType;
@@ -1010,17 +1010,17 @@ static VOID PhpSplitUserName(
     PH_STRINGREF domainPart;
     PH_STRINGREF userPart;
 
-    PhInitializeStringRef(&userName, UserName);
+    PhInitializeStringRefLongHint(&userName, UserName);
 
     if (PhSplitStringRefAtChar(&userName, '\\', &domainPart, &userPart))
     {
-        *DomainPart = PhCreateStringEx(domainPart.Buffer, domainPart.Length);
-        *UserPart = PhCreateStringEx(userPart.Buffer, userPart.Length);
+        *DomainPart = PhCreateString2(&domainPart);
+        *UserPart = PhCreateString2(&userPart);
     }
     else
     {
         *DomainPart = NULL;
-        *UserPart = PhCreateStringEx(userName.Buffer, userName.Length);
+        *UserPart = PhCreateString2(&userName);
     }
 }
 

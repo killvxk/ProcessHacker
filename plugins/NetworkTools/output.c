@@ -2,8 +2,8 @@
  * Process Hacker Network Tools -
  *   output dialog
  *
- * Copyright (C) 2010-2013 wj32
- * Copyright (C) 2012-2013 dmex
+ * Copyright (C) 2010-2015 wj32
+ * Copyright (C) 2012-2015 dmex
  *
  * This file is part of Process Hacker.
  *
@@ -61,13 +61,8 @@ static INT_PTR CALLBACK NetworkOutputDlgProc(
             if (context->PipeReadHandle)
                 NtClose(context->PipeReadHandle);
 
-            // Close the pipe output thread.
-            if (context->ThreadHandle)
-                NtClose(context->ThreadHandle);
-
-            RemoveProp(hwndDlg, L"Context"); 
+            RemoveProp(hwndDlg, L"Context");
             PhFree(context);
-            context = NULL;
         }
     }
 
@@ -87,7 +82,7 @@ static INT_PTR CALLBACK NetworkOutputDlgProc(
             PhAddLayoutItem(&context->LayoutManager, context->OutputHandle, NULL, PH_ANCHOR_ALL);
             PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDC_MORE_INFO), NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_LEFT);
             PhAddLayoutItem(&context->LayoutManager, GetDlgItem(hwndDlg, IDOK), NULL, PH_ANCHOR_BOTTOM | PH_ANCHOR_RIGHT);
-             
+
             windowRectangle.Position = PhGetIntegerPairSetting(SETTING_NAME_TRACERT_WINDOW_POSITION);
             windowRectangle.Size = PhGetIntegerPairSetting(SETTING_NAME_TRACERT_WINDOW_SIZE);
 
@@ -116,11 +111,11 @@ static INT_PTR CALLBACK NetworkOutputDlgProc(
 
             if (context->IpAddress.Type == PH_IPV4_NETWORK_TYPE)
             {
-                RtlIpv4AddressToString(&context->IpAddress.InAddr, context->addressString);
+                RtlIpv4AddressToString(&context->IpAddress.InAddr, context->IpAddressString);
             }
             else
             {
-                RtlIpv6AddressToString(&context->IpAddress.In6Addr, context->addressString);
+                RtlIpv6AddressToString(&context->IpAddress.In6Addr, context->IpAddressString);
             }
 
             switch (context->Action)
@@ -129,11 +124,11 @@ static INT_PTR CALLBACK NetworkOutputDlgProc(
                 {
                     HANDLE dialogThread = INVALID_HANDLE_VALUE;
 
-                    Static_SetText(context->WindowHandle, 
-                        PhaFormatString(L"Tracing route to %s...", context->addressString)->Buffer
+                    Static_SetText(context->WindowHandle,
+                        PhaFormatString(L"Tracing route to %s...", context->IpAddressString)->Buffer
                         );
 
-                    if (dialogThread = PhCreateThread(0, (PUSER_THREAD_START_ROUTINE)NetworkTracertThreadStart, (PVOID)context))
+                    if (dialogThread = PhCreateThread(0, NetworkTracertThreadStart, (PVOID)context))
                         NtClose(dialogThread);
                 }
                 break;
@@ -141,13 +136,25 @@ static INT_PTR CALLBACK NetworkOutputDlgProc(
                 {
                     HANDLE dialogThread = INVALID_HANDLE_VALUE;
 
-                    Static_SetText(context->WindowHandle, 
-                        PhaFormatString(L"Whois %s...", context->addressString)->Buffer
+                    Static_SetText(context->WindowHandle,
+                        PhaFormatString(L"Whois %s...", context->IpAddressString)->Buffer
                         );
 
                     ShowWindow(GetDlgItem(hwndDlg, IDC_MORE_INFO), SW_SHOW);
 
-                    if (dialogThread = PhCreateThread(0, (PUSER_THREAD_START_ROUTINE)NetworkWhoisThreadStart, (PVOID)context))
+                    if (dialogThread = PhCreateThread(0, NetworkWhoisThreadStart, (PVOID)context))
+                        NtClose(dialogThread);
+                }
+                break;
+            case NETWORK_ACTION_PATHPING:
+                {
+                    HANDLE dialogThread = INVALID_HANDLE_VALUE;
+
+                    Static_SetText(context->WindowHandle,
+                        PhaFormatString(L"Pathing route to %s...", context->IpAddressString)->Buffer
+                        );
+
+                    if (dialogThread = PhCreateThread(0, NetworkTracertThreadStart, (PVOID)context))
                         NtClose(dialogThread);
                 }
                 break;
@@ -156,7 +163,7 @@ static INT_PTR CALLBACK NetworkOutputDlgProc(
         break;
     case WM_COMMAND:
         {
-            switch (LOWORD(wParam))
+            switch (GET_WM_COMMAND_ID(wParam, lParam))
             {
             case IDCANCEL:
             case IDOK:
@@ -167,7 +174,7 @@ static INT_PTR CALLBACK NetworkOutputDlgProc(
         break;
     case WM_SIZE:
         PhLayoutManagerLayout(&context->LayoutManager);
-        break;   
+        break;
     case WM_SIZING:
         PhResizingMinimumSize((PRECT)lParam, wParam, MinimumSize.right, MinimumSize.bottom);
         break;
@@ -176,20 +183,23 @@ static INT_PTR CALLBACK NetworkOutputDlgProc(
         {
             HDC hDC = (HDC)wParam;
             HWND hwndChild = (HWND)lParam;
-            
+
             // Check if old graph colors are enabled.
             if (!PhGetIntegerSetting(L"GraphColorMode"))
                 break;
 
-            // Set a transparent background for the control backcolor.
-            SetBkMode(hDC, TRANSPARENT);
-
             // Check for our edit control and change the color.
             if (hwndChild == context->OutputHandle)
             {
+                // Set a transparent background for the control backcolor.
+                //SetBkMode(hDC, TRANSPARENT);
+
+                // Set the Edit control background.
+                SetBkColor(hDC, RGB(0x0, 0x0, 0x0));
+
                 // Set text color as the Green PH graph text color.
                 SetTextColor(hDC, RGB(124, 252, 0));
-                
+
                 // Set a black control backcolor.
                 return (INT_PTR)GetStockBrush(BLACK_BRUSH);
             }
@@ -203,12 +213,12 @@ static INT_PTR CALLBACK NetworkOutputDlgProc(
             case NM_RETURN:
                 {
                     PNMLINK syslink = (PNMLINK)lParam;
- 
+
                     if (syslink->hdr.idFrom == IDC_MORE_INFO)
                     {
                         PhShellExecute(
                             PhMainWndHandle,
-                            PhaConcatStrings2(L"http://wq.apnic.net/apnic-bin/whois.pl?searchtext=", context->addressString)->Buffer,
+                            PhaConcatStrings2(L"http://wq.apnic.net/apnic-bin/whois.pl?searchtext=", context->IpAddressString)->Buffer,
                             NULL
                             );
                     }
@@ -230,7 +240,6 @@ static INT_PTR CALLBACK NetworkOutputDlgProc(
 
                 if (NT_SUCCESS(RtlOemStringToUnicodeString(&convertedString, &inputString, TRUE)))
                 {
-                    USHORT i;
                     PPH_STRING windowText = NULL;
 
                     PhInitializeStringBuilder(&receivedString, PAGE_SIZE);
@@ -240,22 +249,9 @@ static INT_PTR CALLBACK NetworkOutputDlgProc(
 
                     // Append the current output text to the New string.
                     if (!PhIsNullOrEmptyString(windowText))
-                        PhAppendStringBuilder(&receivedString, windowText);
+                        PhAppendStringBuilder(&receivedString, &windowText->sr);
 
-                    PhDereferenceObject(windowText);
-
-                    // Skip unwanted characters
-                    for (i = 0; i < inputString.Length; i++)
-                    {
-                        if (inputString.Buffer[i] == '#')
-                        {
-                            // Skip
-                        }
-                        else
-                        {
-                            PhAppendCharStringBuilder(&receivedString, inputString.Buffer[i]);
-                        }
-                    }
+                    PhAppendFormatStringBuilder(&receivedString, L"%s", convertedString.Buffer);
 
                     // Remove leading newlines.
                     if (receivedString.String->Length >= 2 * 2 &&
@@ -274,20 +270,20 @@ static INT_PTR CALLBACK NetworkOutputDlgProc(
                         );
                     SendMessage(context->OutputHandle, WM_VSCROLL, SB_BOTTOM, 0);
 
+                    PhDereferenceObject(windowText);
                     PhDeleteStringBuilder(&receivedString);
                     RtlFreeUnicodeString(&convertedString);
-                    return TRUE;
                 }
             }
         }
-        break;   
+        break;
     case NTM_RECEIVEDWHOIS:
         {
             OEM_STRING inputString;
             UNICODE_STRING convertedString;
             PH_STRING_BUILDER receivedString;
 
-            if (wParam != 0)
+            if (lParam != 0)
             {
                 inputString.Buffer = (PCHAR)lParam;
                 inputString.Length = (USHORT)wParam;
@@ -298,25 +294,25 @@ static INT_PTR CALLBACK NetworkOutputDlgProc(
 
                     PhInitializeStringBuilder(&receivedString, PAGE_SIZE);
 
-                    // Remove leading newlines.                  
-                    for (i = 0; i < inputString.Length; i++)
+                    // Convert carriage returns.
+                    for (i = 0; i < convertedString.Length; i++)
                     {
-                        if (inputString.Buffer[i] == '\n')
+                        if (convertedString.Buffer[i] == '\n')
                         {
-                            PhAppendStringBuilder(&receivedString, PhaCreateString(L"\r\n"));
+                            PhAppendStringBuilder2(&receivedString, L"\r\n");
                         }
                         else
                         {
-                            PhAppendCharStringBuilder(&receivedString, inputString.Buffer[i]);
+                            PhAppendCharStringBuilder(&receivedString, convertedString.Buffer[i]);
                         }
                     }
 
-                    // Remove leading newlines.  
+                    // Remove leading newlines.
                     if (receivedString.String->Length >= 2 * 2 &&
-                        receivedString.String->Buffer[0] == '\r' && 
+                        receivedString.String->Buffer[0] == '\r' &&
                         receivedString.String->Buffer[1] == '\n')
                     {
-                        PhRemoveStringBuilder(&receivedString, 0, 4);
+                        PhRemoveStringBuilder(&receivedString, 0, 2);
                     }
 
                     SetWindowText(context->OutputHandle, receivedString.String->Buffer);
@@ -330,8 +326,9 @@ static INT_PTR CALLBACK NetworkOutputDlgProc(
 
                     PhDeleteStringBuilder(&receivedString);
                     RtlFreeUnicodeString(&convertedString);
-                    return TRUE;
                 }
+
+                PhFree((PVOID)lParam);
             }
         }
         break;
@@ -342,7 +339,7 @@ static INT_PTR CALLBACK NetworkOutputDlgProc(
             if (windowText)
             {
                 Static_SetText(
-                    context->WindowHandle, 
+                    context->WindowHandle,
                     PhaFormatString(L"%s Finished.", windowText->Buffer)->Buffer
                     );
                 PhDereferenceObject(windowText);
@@ -397,38 +394,15 @@ static NTSTATUS PhNetworkOutputDialogThreadStart(
     return STATUS_SUCCESS;
 }
 
-static HFONT InitializeFont(
-    _In_ HWND hwndDlg
-    )
-{
-    LOGFONT logFont = { 0 };
-    HFONT fontHandle = NULL;
-
-    logFont.lfHeight = -15;
-    logFont.lfWeight = FW_MEDIUM;
-    logFont.lfQuality = CLEARTYPE_QUALITY | ANTIALIASED_QUALITY;
-    
-    // GDI uses the first font that matches the above attributes.
-    fontHandle = CreateFontIndirect(&logFont);
-
-    if (fontHandle)
-    {
-        SendMessage(hwndDlg, WM_SETFONT, (WPARAM)fontHandle, FALSE);
-        return fontHandle;
-    }
-
-    return NULL;
-}
-
 VOID PerformNetworkAction(
     _In_ PH_NETWORK_ACTION Action,
     _In_ PPH_NETWORK_ITEM NetworkItem
     )
-{ 
+{
     HANDLE dialogThread = INVALID_HANDLE_VALUE;
-    PNETWORK_OUTPUT_CONTEXT context = (PNETWORK_OUTPUT_CONTEXT)PhAllocate(
-        sizeof(NETWORK_OUTPUT_CONTEXT)
-        );
+    PNETWORK_OUTPUT_CONTEXT context;
+
+    context = (PNETWORK_OUTPUT_CONTEXT)PhAllocate(sizeof(NETWORK_OUTPUT_CONTEXT));
     memset(context, 0, sizeof(NETWORK_OUTPUT_CONTEXT));
 
     context->Action = Action;
@@ -437,12 +411,12 @@ VOID PerformNetworkAction(
 
     if (context->Action == NETWORK_ACTION_PING)
     {
-        if (dialogThread = PhCreateThread(0, (PUSER_THREAD_START_ROUTINE)PhNetworkPingDialogThreadStart, (PVOID)context))
+        if (dialogThread = PhCreateThread(0, PhNetworkPingDialogThreadStart, (PVOID)context))
             NtClose(dialogThread);
     }
     else
     {
-        if (dialogThread = PhCreateThread(0, (PUSER_THREAD_START_ROUTINE)PhNetworkOutputDialogThreadStart, (PVOID)context)) 
+        if (dialogThread = PhCreateThread(0, PhNetworkOutputDialogThreadStart, (PVOID)context))
             NtClose(dialogThread);
     }
 }

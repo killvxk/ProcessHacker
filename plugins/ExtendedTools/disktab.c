@@ -2,7 +2,7 @@
  * Process Hacker Extended Tools -
  *   ETW disk monitoring
  *
- * Copyright (C) 2011 wj32
+ * Copyright (C) 2011-2015 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -23,7 +23,7 @@
 #include "exttools.h"
 #include "etwmon.h"
 #include "resource.h"
-#include <colmgr.h>
+#include <toolstatusintf.h>
 #include "disktabp.h"
 
 static BOOLEAN DiskTreeNewCreated = FALSE;
@@ -40,11 +40,25 @@ static PH_CALLBACK_REGISTRATION DiskItemRemovedRegistration;
 static PH_CALLBACK_REGISTRATION DiskItemsUpdatedRegistration;
 static BOOLEAN DiskNeedsRedraw = FALSE;
 
+static PH_TN_FILTER_SUPPORT FilterSupport;
+static PTOOLSTATUS_INTERFACE ToolStatusInterface;
+static PH_CALLBACK_REGISTRATION SearchChangedRegistration;
+
 VOID EtInitializeDiskTab(
     VOID
     )
 {
     PH_ADDITIONAL_TAB_PAGE tabPage;
+    PPH_ADDITIONAL_TAB_PAGE addedTabPage;
+    PPH_PLUGIN toolStatusPlugin;
+
+    if (toolStatusPlugin = PhFindPlugin(TOOLSTATUS_PLUGIN_NAME))
+    {
+        ToolStatusInterface = PhGetPluginInformation(toolStatusPlugin)->Interface;
+
+        if (ToolStatusInterface->Version < TOOLSTATUS_INTERFACE_VERSION)
+            ToolStatusInterface = NULL;
+    }
 
     memset(&tabPage, 0, sizeof(PH_ADDITIONAL_TAB_PAGE));
     tabPage.Text = L"Disk";
@@ -53,7 +67,17 @@ VOID EtInitializeDiskTab(
     tabPage.SelectionChangedCallback = EtpDiskTabSelectionChangedCallback;
     tabPage.SaveContentCallback = EtpDiskTabSaveContentCallback;
     tabPage.FontChangedCallback = EtpDiskTabFontChangedCallback;
-    ProcessHacker_AddTabPage(PhMainWndHandle, &tabPage);
+    addedTabPage = ProcessHacker_AddTabPage(PhMainWndHandle, &tabPage);
+
+    if (ToolStatusInterface)
+    {
+        PTOOLSTATUS_TAB_INFO tabInfo;
+
+        tabInfo = ToolStatusInterface->RegisterTabInfo(addedTabPage->Index);
+        tabInfo->BannerText = L"Search Disk";
+        tabInfo->ActivateContent = EtpToolStatusActivateContent;
+        tabInfo->GetTreeNewHandle = EtpToolStatusGetTreeNewHandle;
+    }
 }
 
 HWND NTAPI EtpDiskTabCreateFunction(
@@ -62,22 +86,37 @@ HWND NTAPI EtpDiskTabCreateFunction(
 {
     HWND hwnd;
 
-    hwnd = CreateWindow(
-        PH_TREENEW_CLASSNAME,
-        NULL,
-        WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_BORDER | TN_STYLE_ICONS | TN_STYLE_DOUBLE_BUFFERED,
-        0,
-        0,
-        3,
-        3,
-        PhMainWndHandle,
-        (HMENU)PhPluginReserveIds(1),
-        PluginInstance->DllBase,
-        NULL
-        );
+    if (EtEtwEnabled)
+    {
+        ULONG thinRows;
 
-    if (!hwnd)
-        return NULL;
+        thinRows = PhGetIntegerSetting(L"ThinRows") ? TN_STYLE_THIN_ROWS : 0;
+        hwnd = CreateWindow(
+            PH_TREENEW_CLASSNAME,
+            NULL,
+            WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_BORDER | TN_STYLE_ICONS | TN_STYLE_DOUBLE_BUFFERED | thinRows,
+            0,
+            0,
+            3,
+            3,
+            PhMainWndHandle,
+            NULL,
+            NULL,
+            NULL
+            );
+
+        if (!hwnd)
+            return NULL;
+    }
+    else
+    {
+        return CreateDialog(
+            PluginInstance->DllBase,
+            MAKEINTRESOURCE(IDD_DISKTABERROR),
+            PhMainWndHandle,
+            EtpDiskTabErrorDialogProc
+            );
+    }
 
     DiskTreeNewCreated = TRUE;
 
@@ -132,7 +171,8 @@ VOID NTAPI EtpDiskTabSelectionChangedCallback(
 {
     if ((BOOLEAN)Parameter1)
     {
-        SetFocus(DiskTreeNewHandle);
+        if (DiskTreeNewHandle)
+            SetFocus(DiskTreeNewHandle);
     }
 }
 
@@ -145,6 +185,9 @@ VOID NTAPI EtpDiskTabSaveContentCallback(
 {
     PPH_FILE_STREAM fileStream = Parameter1;
     ULONG mode = PtrToUlong(Parameter2);
+
+    if (!EtEtwEnabled)
+        return;
 
     EtWriteDiskList(fileStream, mode);
 }
@@ -175,11 +218,7 @@ ULONG EtpDiskNodeHashtableHashFunction(
     _In_ PVOID Entry
     )
 {
-#ifdef _M_IX86
-    return PhHashInt32((ULONG)(*(PET_DISK_NODE *)Entry)->DiskItem);
-#else
-    return PhHashInt64((ULONG64)(*(PET_DISK_NODE *)Entry)->DiskItem);
-#endif
+    return PhHashIntPtr((ULONG_PTR)(*(PET_DISK_NODE *)Entry)->DiskItem);
 }
 
 VOID EtInitializeDiskTreeList(
@@ -208,6 +247,14 @@ VOID EtInitializeDiskTreeList(
     TreeNew_SetSort(hwnd, ETDSTNC_TOTALRATEAVERAGE, DescendingSortOrder);
 
     EtLoadSettingsDiskTreeList();
+
+    PhInitializeTreeNewFilterSupport(&FilterSupport, hwnd, DiskNodeList);
+
+    if (ToolStatusInterface)
+    {
+        PhRegisterCallback(ToolStatusInterface->SearchChangedEvent, EtpSearchChangedHandler, NULL, &SearchChangedRegistration);
+        PhAddTreeNewFilter(&FilterSupport, EtpSearchDiskListFilterCallback, NULL);
+    }
 }
 
 VOID EtLoadSettingsDiskTreeList(
@@ -257,8 +304,7 @@ PET_DISK_NODE EtAddDiskNode(
     memset(diskNode, 0, sizeof(ET_DISK_NODE));
     PhInitializeTreeNewNode(&diskNode->Node);
 
-    diskNode->DiskItem = DiskItem;
-    PhReferenceObject(DiskItem);
+    PhSetReference(&diskNode->DiskItem, DiskItem);
 
     memset(diskNode->TextCache, 0, sizeof(PH_STRINGREF) * ETDSTNC_MAXIMUM);
     diskNode->Node.TextCache = diskNode->TextCache;
@@ -268,6 +314,9 @@ PET_DISK_NODE EtAddDiskNode(
 
     PhAddEntryHashtable(DiskNodeHashtable, &diskNode);
     PhAddItemList(DiskNodeList, diskNode);
+
+    if (FilterSupport.NodeList)
+        diskNode->Node.Visible = PhApplyTreeNewFiltersToNode(&FilterSupport, &diskNode->Node);
 
     TreeNew_NodesStructured(DiskTreeNewHandle);
 
@@ -499,7 +548,7 @@ BOOLEAN NTAPI EtpDiskTreeNewCallback(
                     PH_FORMAT format;
 
                     PhInitFormatF(&format, diskItem->ResponseTimeAverage, 0);
-                    PhSwapReference2(&node->ResponseTimeText, PhFormat(&format, 1, 0));
+                    PhMoveReference(&node->ResponseTimeText, PhFormat(&format, 1, 0));
                     getCellText->Text = node->ResponseTimeText->sr;
                 }
                 break;
@@ -561,7 +610,7 @@ BOOLEAN NTAPI EtpDiskTreeNewCallback(
 
                         if (callback(ProcessTreeNewHandle, TreeNewGetCellTooltip, &fakeGetCellTooltip, NULL, callbackContext))
                         {
-                            node->TooltipText = PhCreateStringEx(fakeGetCellTooltip.Text.Buffer, fakeGetCellTooltip.Text.Length);
+                            node->TooltipText = PhCreateString2(&fakeGetCellTooltip.Text);
                         }
                     }
                 }
@@ -616,7 +665,7 @@ BOOLEAN NTAPI EtpDiskTreeNewCallback(
             data.DefaultSortOrder = AscendingSortOrder;
             PhInitializeTreeNewColumnMenu(&data);
 
-            data.Selection = PhShowEMenu(data.Menu, hwnd, PH_EMENU_SHOW_LEFTRIGHT | PH_EMENU_SHOW_NONOTIFY,
+            data.Selection = PhShowEMenu(data.Menu, hwnd, PH_EMENU_SHOW_LEFTRIGHT,
                 PH_ALIGN_LEFT | PH_ALIGN_TOP, data.MouseEvent->ScreenLocation.x, data.MouseEvent->ScreenLocation.y);
             PhHandleTreeNewColumnMenu(&data);
             PhDeleteTreeNewColumnMenu(&data);
@@ -654,7 +703,7 @@ PPH_STRING EtpGetDiskItemProcessName(
         return PhCreateString(L"No Process");
 
     PhInitFormatS(&format[1], L" (");
-    PhInitFormatU(&format[2], (ULONG)DiskItem->ProcessId);
+    PhInitFormatU(&format[2], HandleToUlong(DiskItem->ProcessId));
     PhInitFormatC(&format[3], ')');
 
     if (DiskItem->ProcessName)
@@ -741,7 +790,7 @@ VOID EtCopyDiskList(
     PPH_STRING text;
 
     text = PhGetTreeNewText(DiskTreeNewHandle, 0);
-    PhSetClipboardStringEx(DiskTreeNewHandle, text->Buffer, text->Length);
+    PhSetClipboardString(DiskTreeNewHandle, &text->sr);
     PhDereferenceObject(text);
 }
 
@@ -760,9 +809,9 @@ VOID EtWriteDiskList(
         PPH_STRING line;
 
         line = lines->Items[i];
-        PhWriteStringAsAnsiFileStream(FileStream, &line->sr);
+        PhWriteStringAsUtf8FileStream(FileStream, &line->sr);
         PhDereferenceObject(line);
-        PhWriteStringAsAnsiFileStream2(FileStream, L"\r\n");
+        PhWriteStringAsUtf8FileStream2(FileStream, L"\r\n");
     }
 
     PhDereferenceObject(lines);
@@ -1012,8 +1061,121 @@ static VOID NTAPI EtpOnDiskItemsUpdated(
         // The name and file name never change, so we don't invalidate that.
         memset(&node->TextCache[2], 0, sizeof(PH_STRINGREF) * (ETDSTNC_MAXIMUM - 2));
         // Always get the newest tooltip text from the process tree.
-        PhSwapReference(&node->TooltipText, NULL);
+        PhClearReference(&node->TooltipText);
     }
 
     InvalidateRect(DiskTreeNewHandle, NULL, FALSE);
+}
+
+VOID NTAPI EtpSearchChangedHandler(
+    _In_opt_ PVOID Parameter,
+    _In_opt_ PVOID Context
+    )
+{
+    if (!EtEtwEnabled)
+        return;
+
+    PhApplyTreeNewFilters(&FilterSupport);
+}
+
+BOOLEAN NTAPI EtpSearchDiskListFilterCallback(
+    _In_ PPH_TREENEW_NODE Node,
+    _In_opt_ PVOID Context
+    )
+{
+    PET_DISK_NODE diskNode = (PET_DISK_NODE)Node;
+    PTOOLSTATUS_WORD_MATCH wordMatch = ToolStatusInterface->WordMatch;
+
+    if (PhIsNullOrEmptyString(ToolStatusInterface->GetSearchboxText()))
+        return TRUE;
+
+    if (wordMatch(&diskNode->ProcessNameText->sr))
+        return TRUE;
+
+    if (wordMatch(&diskNode->DiskItem->FileNameWin32->sr))
+        return TRUE;
+
+    return FALSE;
+}
+
+VOID NTAPI EtpToolStatusActivateContent(
+    _In_ BOOLEAN Select
+    )
+{
+    SetFocus(DiskTreeNewHandle);
+
+    if (Select)
+    {
+        if (TreeNew_GetFlatNodeCount(DiskTreeNewHandle) > 0)
+            EtSelectAndEnsureVisibleDiskNode((PET_DISK_NODE)TreeNew_GetFlatNode(DiskTreeNewHandle, 0));
+    }
+}
+
+HWND NTAPI EtpToolStatusGetTreeNewHandle(
+    VOID
+    )
+{
+    return DiskTreeNewHandle;
+}
+
+INT_PTR CALLBACK EtpDiskTabErrorDialogProc(
+    _In_ HWND hwndDlg,
+    _In_ UINT uMsg,
+    _In_ WPARAM wParam,
+    _In_ LPARAM lParam
+    )
+{
+    switch (uMsg)
+    {
+    case WM_INITDIALOG:
+        {
+            if (!PhElevated)
+            {
+                SendMessage(GetDlgItem(hwndDlg, IDC_RESTART), BCM_SETSHIELD, 0, TRUE);
+            }
+            else
+            {
+                SetDlgItemText(hwndDlg, IDC_ERROR, L"Unable to start the kernel event tracing session.");
+                ShowWindow(GetDlgItem(hwndDlg, IDC_RESTART), SW_HIDE);
+            }
+        }
+        break;
+    case WM_COMMAND:
+        {
+            switch (LOWORD(wParam))
+            {
+            case IDC_RESTART:
+                ProcessHacker_PrepareForEarlyShutdown(PhMainWndHandle);
+
+                if (PhShellProcessHacker(
+                    PhMainWndHandle,
+                    L"-v -selecttab Disk",
+                    SW_SHOW,
+                    PH_SHELL_EXECUTE_ADMIN,
+                    PH_SHELL_APP_PROPAGATE_PARAMETERS | PH_SHELL_APP_PROPAGATE_PARAMETERS_IGNORE_VISIBILITY,
+                    0,
+                    NULL
+                    ))
+                {
+                    ProcessHacker_Destroy(PhMainWndHandle);
+                }
+                else
+                {
+                    ProcessHacker_CancelEarlyShutdown(PhMainWndHandle);
+                }
+
+                break;
+            }
+        }
+        break;
+    case WM_CTLCOLORBTN:
+    case WM_CTLCOLORSTATIC:
+        {
+            SetBkMode((HDC)wParam, TRANSPARENT);
+            return (INT_PTR)GetSysColorBrush(COLOR_WINDOW);
+        }
+        break;
+    }
+
+    return FALSE;
 }

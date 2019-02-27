@@ -100,15 +100,15 @@ typedef enum _PROCESSINFOCLASS
     ProcessBasicInformation, // 0, q: PROCESS_BASIC_INFORMATION, PROCESS_EXTENDED_BASIC_INFORMATION
     ProcessQuotaLimits, // qs: QUOTA_LIMITS, QUOTA_LIMITS_EX
     ProcessIoCounters, // q: IO_COUNTERS
-    ProcessVmCounters, // q: VM_COUNTERS, VM_COUNTERS_EX
+    ProcessVmCounters, // q: VM_COUNTERS, VM_COUNTERS_EX, VM_COUNTERS_EX2
     ProcessTimes, // q: KERNEL_USER_TIMES
     ProcessBasePriority, // s: KPRIORITY
     ProcessRaisePriority, // s: ULONG
     ProcessDebugPort, // q: HANDLE
     ProcessExceptionPort, // s: HANDLE
     ProcessAccessToken, // s: PROCESS_ACCESS_TOKEN
-    ProcessLdtInformation, // 10
-    ProcessLdtSize,
+    ProcessLdtInformation, // 10, qs: PROCESS_LDT_INFORMATION
+    ProcessLdtSize, // s: PROCESS_LDT_SIZE
     ProcessDefaultHardErrorMode, // qs: ULONG
     ProcessIoPortHandlers, // (kernel-mode only)
     ProcessPooledUsageAndLimits, // q: POOLED_USAGE_AND_LIMITS
@@ -159,6 +159,16 @@ typedef enum _PROCESSINFOCLASS
     ProcessCheckStackExtentsMode,
     ProcessCommandLineInformation, // 60, q: UNICODE_STRING
     ProcessProtectionInformation, // q: PS_PROTECTION
+    ProcessMemoryExhaustion, // PROCESS_MEMORY_EXHAUSTION_INFO // since THRESHOLD
+    ProcessFaultInformation, // PROCESS_FAULT_INFORMATION
+    ProcessTelemetryIdInformation, // PROCESS_TELEMETRY_ID_INFORMATION
+    ProcessCommitReleaseInformation, // PROCESS_COMMIT_RELEASE_INFORMATION
+    ProcessDefaultCpuSetsInformation,
+    ProcessAllowedCpuSetsInformation,
+    ProcessReserved1Information,
+    ProcessReserved2Information,
+    ProcessSubsystemProcess, // 70
+    ProcessJobMemoryInformation, // PROCESS_JOB_MEMORY_INFO
     MaxProcessInfoClass
 } PROCESSINFOCLASS;
 #endif
@@ -172,7 +182,7 @@ typedef enum _THREADINFOCLASS
     ThreadBasePriority, // s: LONG
     ThreadAffinityMask, // s: KAFFINITY
     ThreadImpersonationToken, // s: HANDLE
-    ThreadDescriptorTableEntry,
+    ThreadDescriptorTableEntry, // q: DESCRIPTOR_TABLE_ENTRY (or WOW64_DESCRIPTOR_TABLE_ENTRY)
     ThreadEnableAlignmentFaultFixup, // s: BOOLEAN
     ThreadEventPair,
     ThreadQuerySetWin32StartAddress, // q: PVOID
@@ -202,6 +212,12 @@ typedef enum _THREADINFOCLASS
     ThreadIdealProcessorEx, // q: PROCESSOR_NUMBER
     ThreadCpuAccountingInformation, // since WIN8
     ThreadSuspendCount, // since WINBLUE
+    ThreadHeterogeneousCpuPolicy, // KHETERO_CPU_POLICY // since THRESHOLD
+    ThreadContainerId,
+    ThreadNameInformation,
+    ThreadProperty,
+    ThreadSelectedCpuSets,
+    ThreadSystemThreadInformation,
     MaxThreadInfoClass
 } THREADINFOCLASS;
 #endif
@@ -244,7 +260,8 @@ typedef struct _PROCESS_EXTENDED_BASIC_INFORMATION
             ULONG IsFrozen : 1;
             ULONG IsBackground : 1;
             ULONG IsStronglyNamed : 1;
-            ULONG SpareBits : 25;
+            ULONG IsSecureProcess : 1;
+            ULONG SpareBits : 24;
         };
     };
 } PROCESS_EXTENDED_BASIC_INFORMATION, *PPROCESS_EXTENDED_BASIC_INFORMATION;
@@ -280,6 +297,14 @@ typedef struct _VM_COUNTERS_EX
     SIZE_T PrivateUsage;
 } VM_COUNTERS_EX, *PVM_COUNTERS_EX;
 
+// private
+typedef struct _VM_COUNTERS_EX2
+{
+    VM_COUNTERS_EX CountersEx;
+    SIZE_T PrivateWorkingSetSize;
+    SIZE_T SharedCommitUsage;
+} VM_COUNTERS_EX2, *PVM_COUNTERS_EX2;
+
 typedef struct _KERNEL_USER_TIMES
 {
     LARGE_INTEGER CreateTime;
@@ -306,6 +331,18 @@ typedef struct _PROCESS_ACCESS_TOKEN
     HANDLE Token; // needs TOKEN_ASSIGN_PRIMARY access
     HANDLE Thread; // handle to initial/only thread; needs THREAD_QUERY_INFORMATION access
 } PROCESS_ACCESS_TOKEN, *PPROCESS_ACCESS_TOKEN;
+
+typedef struct _PROCESS_LDT_INFORMATION
+{
+    ULONG Start;
+    ULONG Length;
+    LDT_ENTRY LdtEntries[1];
+} PROCESS_LDT_INFORMATION, *PPROCESS_LDT_INFORMATION;
+
+typedef struct _PROCESS_LDT_SIZE
+{
+    ULONG Length;
+} PROCESS_LDT_SIZE, *PPROCESS_LDT_SIZE;
 
 typedef struct _PROCESS_WS_WATCH_INFORMATION
 {
@@ -503,32 +540,21 @@ typedef struct _PROCESS_HANDLE_SNAPSHOT_INFORMATION
 #if (PHNT_MODE != PHNT_MODE_KERNEL)
 
 // private
-typedef struct _PROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY
-{
-    union
-    {
-        ULONG Flags;
-        struct
-        {
-            ULONG EnableControlFlowGuard : 1;
-            ULONG ReservedFlags : 31;
-        };
-    };
-} PROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY, *PPROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY;
-
-// private
 typedef struct _PROCESS_MITIGATION_POLICY_INFORMATION
 {
     PROCESS_MITIGATION_POLICY Policy;
     union
     {
         PROCESS_MITIGATION_ASLR_POLICY ASLRPolicy;
+        PROCESS_MITIGATION_DEP_POLICY DEPPolicy;
         PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY StrictHandleCheckPolicy;
         PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY SystemCallDisablePolicy;
         PROCESS_MITIGATION_EXTENSION_POINT_DISABLE_POLICY ExtensionPointDisablePolicy;
         PROCESS_MITIGATION_DYNAMIC_CODE_POLICY DynamicCodePolicy;
         PROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY ControlFlowGuardPolicy;
         PROCESS_MITIGATION_BINARY_SIGNATURE_POLICY SignaturePolicy;
+        PROCESS_MITIGATION_FONT_DISABLE_POLICY FontPolicy;
+        PROCESS_MITIGATION_IMAGE_LOAD_POLICY ImagePolicy;
     };
 } PROCESS_MITIGATION_POLICY_INFORMATION, *PPROCESS_MITIGATION_POLICY_INFORMATION;
 
@@ -592,6 +618,53 @@ typedef struct _PS_PROTECTION
         };
     };
 } PS_PROTECTION, *PPS_PROTECTION;
+
+typedef struct _PROCESS_FAULT_INFORMATION
+{
+    ULONG FaultFlags;
+    ULONG AdditionalInfo;
+} PROCESS_FAULT_INFORMATION, *PPROCESS_FAULT_INFORMATION;
+
+typedef struct _PROCESS_TELEMETRY_ID_INFORMATION
+{
+    ULONG HeaderSize;
+    ULONG ProcessId;
+    ULONGLONG ProcessStartKey;
+    ULONGLONG CreateTime;
+    ULONGLONG CreateInterruptTime;
+    ULONGLONG CreateUnbiasedInterruptTime;
+    ULONGLONG ProcessSequenceNumber;
+    ULONGLONG SessionCreateTime;
+    ULONG SessionId;
+    ULONG BootId;
+    ULONG ImageChecksum;
+    ULONG ImageTimeDateStamp;
+    ULONG UserSidOffset;
+    ULONG ImagePathOffset;
+    ULONG PackageNameOffset;
+    ULONG RelativeAppNameOffset;
+    ULONG CommandLineOffset;
+} PROCESS_TELEMETRY_ID_INFORMATION, *PPROCESS_TELEMETRY_ID_INFORMATION;
+
+typedef struct _PROCESS_COMMIT_RELEASE_INFORMATION
+{
+    ULONG Version;
+    struct
+    {
+        ULONG Eligible : 1;
+        ULONG Spare : 31;
+    };
+    SIZE_T CommitDebt;
+} PROCESS_COMMIT_RELEASE_INFORMATION, *PPROCESS_COMMIT_RELEASE_INFORMATION;
+
+typedef struct _PROCESS_JOB_MEMORY_INFO
+{
+    ULONGLONG SharedCommitUsage;
+    ULONGLONG PrivateCommitUsage;
+    ULONGLONG PeakPrivateCommitUsage;
+    ULONGLONG PrivateCommitLimit;
+    ULONGLONG TotalCommitLimit;
+} PROCESS_JOB_MEMORY_INFO, *PPROCESS_JOB_MEMORY_INFO;
 
 // end_private
 
@@ -663,8 +736,6 @@ typedef struct _THREAD_PROFILING_INFORMATION
     ULONG Enable;
     PTHREAD_PERFORMANCE_DATA PerformanceData;
 } THREAD_PROFILING_INFORMATION, *PTHREAD_PROFILING_INFORMATION;
-
-// System calls
 
 // Processes
 
@@ -741,12 +812,13 @@ NtResumeProcess(
 #define ZwCurrentProcess() NtCurrentProcess()
 #define NtCurrentThread() ((HANDLE)(LONG_PTR)-2)
 #define ZwCurrentThread() NtCurrentThread()
+#define NtCurrentSession() ((HANDLE)(LONG_PTR)-3)
+#define ZwCurrentSession() NtCurrentSession()
 #define NtCurrentPeb() (NtCurrentTeb()->ProcessEnvironmentBlock)
 
 // Not NT, but useful.
 #define NtCurrentProcessId() (NtCurrentTeb()->ClientId.UniqueProcess)
 #define NtCurrentThreadId() (NtCurrentTeb()->ClientId.UniqueThread)
-
 
 NTSYSCALLAPI
 NTSTATUS
@@ -968,6 +1040,20 @@ NtQueueApcThread(
     _In_opt_ PVOID ApcArgument3
     );
 
+#if (PHNT_VERSION >= PHNT_WIN7)
+NTSYSCALLAPI
+NTSTATUS
+NTAPI
+NtQueueApcThreadEx(
+    _In_ HANDLE ThreadHandle,
+    _In_opt_ HANDLE UserApcReserveHandle,
+    _In_ PPS_APC_ROUTINE ApcRoutine,
+    _In_opt_ PVOID ApcArgument1,
+    _In_opt_ PVOID ApcArgument2,
+    _In_opt_ PVOID ApcArgument3
+    );
+#endif
+
 #endif
 
 // User processes and threads
@@ -1004,6 +1090,8 @@ typedef enum _PS_ATTRIBUTE_NUM
     PsAttributeUmsThread, // ? in PUMS_CREATE_THREAD_ATTRIBUTES
     PsAttributeMitigationOptions, // in UCHAR
     PsAttributeProtectionLevel,
+    PsAttributeSecureProcess, // since THRESHOLD
+    PsAttributeJobList,
     PsAttributeMax
 } PS_ATTRIBUTE_NUM;
 
@@ -1117,14 +1205,6 @@ typedef enum _PS_CREATE_STATE
     PsCreateMaximumStates
 } PS_CREATE_STATE;
 
-typedef enum _PS_IFEO_KEY_STATE
-{
-    PsReadIFEOAllValues,
-    PsSkipIFEODebugger,
-    PsSkipAllIFEO,
-    PsMaxIFEOKeyStates
-} PS_IFEO_KEY_STATE, *PPS_IFEO_KEY_STATE;
-
 typedef struct _PS_CREATE_INFO
 {
     SIZE_T Size;
@@ -1141,9 +1221,10 @@ typedef struct _PS_CREATE_INFO
                 {
                     UCHAR WriteOutputOnExit : 1;
                     UCHAR DetectManifest : 1;
-                    UCHAR SpareBits1 : 6;
-                    UCHAR IFEOKeyState : 2; // PS_IFEO_KEY_STATE
-                    UCHAR SpareBits2 : 6;
+                    UCHAR IFEOSkipDebugger : 1;
+                    UCHAR IFEODoNotPropagateKeyState : 1;
+                    UCHAR SpareBits1 : 4;
+                    UCHAR SpareBits2 : 8;
                     USHORT ProhibitedImageCharacteristics : 16;
                 };
             };
@@ -1155,6 +1236,12 @@ typedef struct _PS_CREATE_INFO
         {
             HANDLE FileHandle;
         } FailSection;
+
+        // PsCreateFailExeFormat
+        struct
+        {
+            USHORT DllCharacteristics;
+        } ExeFormat;
 
         // PsCreateFailExeName
         struct
@@ -1174,7 +1261,8 @@ typedef struct _PS_CREATE_INFO
                     UCHAR AddressSpaceOverride : 1;
                     UCHAR DevOverrideEnabled : 1; // from Image File Execution Options
                     UCHAR ManifestDetected : 1;
-                    UCHAR SpareBits1 : 4;
+                    UCHAR ProtectedProcessLight : 1;
+                    UCHAR SpareBits1 : 3;
                     UCHAR SpareBits2 : 8;
                     USHORT SpareBits3 : 16;
                 };
@@ -1203,7 +1291,6 @@ typedef struct _PS_CREATE_INFO
 // end_rev
 
 #if (PHNT_VERSION >= PHNT_VISTA)
-// private
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1216,7 +1303,7 @@ NtCreateUserProcess(
     _In_opt_ POBJECT_ATTRIBUTES ThreadObjectAttributes,
     _In_ ULONG ProcessFlags, // PROCESS_CREATE_FLAGS_*
     _In_ ULONG ThreadFlags, // THREAD_CREATE_FLAGS_*
-    _In_opt_ PVOID ProcessParameters,
+    _In_opt_ PVOID ProcessParameters, // PRTL_USER_PROCESS_PARAMETERS
     _Inout_ PPS_CREATE_INFO CreateInfo,
     _In_opt_ PPS_ATTRIBUTE_LIST AttributeList
     );
@@ -1232,7 +1319,6 @@ NtCreateUserProcess(
 // end_rev
 
 #if (PHNT_VERSION >= PHNT_VISTA)
-// private
 NTSYSCALLAPI
 NTSTATUS
 NTAPI
@@ -1241,62 +1327,19 @@ NtCreateThreadEx(
     _In_ ACCESS_MASK DesiredAccess,
     _In_opt_ POBJECT_ATTRIBUTES ObjectAttributes,
     _In_ HANDLE ProcessHandle,
-    _In_ PVOID StartRoutine,
+    _In_ PVOID StartRoutine, // PUSER_THREAD_START_ROUTINE
     _In_opt_ PVOID Argument,
     _In_ ULONG CreateFlags, // THREAD_CREATE_FLAGS_*
-    _In_opt_ ULONG_PTR ZeroBits,
-    _In_opt_ SIZE_T StackSize,
-    _In_opt_ SIZE_T MaximumStackSize,
+    _In_ SIZE_T ZeroBits,
+    _In_ SIZE_T StackSize,
+    _In_ SIZE_T MaximumStackSize,
     _In_opt_ PPS_ATTRIBUTE_LIST AttributeList
     );
 #endif
 
 #endif
 
-// Reserve objects
-
-#if (PHNT_MODE != PHNT_MODE_KERNEL)
-
-// private
-typedef enum _MEMORY_RESERVE_TYPE
-{
-    MemoryReserveUserApc,
-    MemoryReserveIoCompletion,
-    MemoryReserveTypeMax
-} MEMORY_RESERVE_TYPE;
-
-// begin_rev
-
-#if (PHNT_VERSION >= PHNT_WIN7)
-NTSYSCALLAPI
-NTSTATUS
-NTAPI
-NtAllocateReserveObject(
-    _Out_ PHANDLE MemoryReserveHandle,
-    _In_opt_ POBJECT_ATTRIBUTES ObjectAttributes,
-    _In_ MEMORY_RESERVE_TYPE Type
-    );
-#endif
-
-#if (PHNT_VERSION >= PHNT_WIN7)
-NTSYSCALLAPI
-NTSTATUS
-NTAPI
-NtQueueApcThreadEx(
-    _In_ HANDLE ThreadHandle,
-    _In_opt_ HANDLE UserApcReserveHandle,
-    _In_ PPS_APC_ROUTINE ApcRoutine,
-    _In_opt_ PVOID ApcArgument1,
-    _In_opt_ PVOID ApcArgument2,
-    _In_opt_ PVOID ApcArgument3
-    );
-#endif
-
-// end_rev
-
-#endif
-
-// Job Objects
+// Job objects
 
 #if (PHNT_MODE != PHNT_MODE_KERNEL)
 
@@ -1371,6 +1414,40 @@ NtCreateJobSet(
     _In_reads_(NumJob) PJOB_SET_ARRAY UserJobSet,
     _In_ ULONG Flags
     );
+
+#if (PHNT_VERSION >= PHNT_THRESHOLD)
+NTSYSCALLAPI
+NTSTATUS
+NTAPI
+NtRevertContainerImpersonation(
+    VOID
+    );
+#endif
+
+#endif
+
+// Reserve objects
+
+#if (PHNT_MODE != PHNT_MODE_KERNEL)
+
+// private
+typedef enum _MEMORY_RESERVE_TYPE
+{
+    MemoryReserveUserApc,
+    MemoryReserveIoCompletion,
+    MemoryReserveTypeMax
+} MEMORY_RESERVE_TYPE;
+
+#if (PHNT_VERSION >= PHNT_WIN7)
+NTSYSCALLAPI
+NTSTATUS
+NTAPI
+NtAllocateReserveObject(
+    _Out_ PHANDLE MemoryReserveHandle,
+    _In_ POBJECT_ATTRIBUTES ObjectAttributes,
+    _In_ MEMORY_RESERVE_TYPE Type
+    );
+#endif
 
 #endif
 

@@ -2,11 +2,10 @@
 #define PH_PHPLUG_H
 
 #include <extmgr.h>
+#include <sysinfo.h>
+#include <miniinfo.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
+// begin_phapppub
 // Callbacks
 
 typedef enum _PH_GENERAL_CALLBACK
@@ -40,9 +39,25 @@ typedef enum _PH_GENERAL_CALLBACK
     GeneralCallbackThreadStackControl = 26, // PPH_PLUGIN_THREAD_STACK_CONTROL Data [properties thread]
     GeneralCallbackSystemInformationInitializing = 27, // PPH_PLUGIN_SYSINFO_POINTERS Data [system information thread]
     GeneralCallbackMainWindowTabChanged = 28, // INT NewIndex [main thread]
-
+    GeneralCallbackMemoryTreeNewInitializing = 29, // PPH_PLUGIN_TREENEW_INFORMATION Data [properties thread]
+    GeneralCallbackMemoryTreeNewUninitializing = 30, // PPH_PLUGIN_TREENEW_INFORMATION Data [properties thread]
+    GeneralCallbackMemoryItemListControl = 31, // PPH_PLUGIN_MEMORY_ITEM_LIST_CONTROL Data [properties thread]
+    GeneralCallbackMiniInformationInitializing = 32, // PPH_PLUGIN_MINIINFO_POINTERS Data [main thread]
+    GeneralCallbackMiListSectionMenuInitializing = 33, // PPH_PLUGIN_MENU_INFORMATION Data [main thread]
     GeneralCallbackMaximum
 } PH_GENERAL_CALLBACK, *PPH_GENERAL_CALLBACK;
+
+typedef enum _PH_PLUGIN_CALLBACK
+{
+    PluginCallbackLoad = 0, // PPH_LIST Parameters [main thread] // list of strings, might be NULL
+    PluginCallbackUnload = 1, // [main thread]
+    PluginCallbackShowOptions = 2, // HWND ParentWindowHandle [main thread]
+    PluginCallbackMenuItem = 3, // PPH_PLUGIN_MENU_ITEM MenuItem [main/properties thread]
+    PluginCallbackTreeNewMessage = 4, // PPH_PLUGIN_TREENEW_MESSAGE Message [main/properties thread]
+    PluginCallbackPhSvcRequest = 5, // PPH_PLUGIN_PHSVC_REQUEST Message [phsvc thread]
+    PluginCallbackMenuHook = 6, // PH_PLUGIN_MENU_HOOK_INFORMATION MenuHookInfo [menu thread]
+    PluginCallbackMaximum
+} PH_PLUGIN_CALLBACK, *PPH_PLUGIN_CALLBACK;
 
 typedef struct _PH_PLUGIN_GET_HIGHLIGHTING_COLOR
 {
@@ -62,6 +77,7 @@ typedef struct _PH_PLUGIN_GET_TOOLTIP_TEXT
 
     PVOID Parameter;
     PPH_STRING_BUILDER StringBuilder;
+    ULONG ValidForMs;
 } PH_PLUGIN_GET_TOOLTIP_TEXT, *PPH_PLUGIN_GET_TOOLTIP_TEXT;
 
 typedef struct _PH_PLUGIN_PROCESS_PROPCONTEXT
@@ -101,6 +117,8 @@ typedef struct _PH_PLUGIN_HANDLE_PROPERTIES_CONTEXT
 
 typedef struct _PH_EMENU_ITEM *PPH_EMENU_ITEM, *PPH_EMENU;
 
+#define PH_PLUGIN_MENU_DISALLOW_HOOKS 0x1
+
 typedef struct _PH_PLUGIN_MENU_INFORMATION
 {
     PPH_EMENU Menu;
@@ -108,6 +126,10 @@ typedef struct _PH_PLUGIN_MENU_INFORMATION
 
     union
     {
+        struct
+        {
+            PVOID Reserved[8]; // Reserve space for future expansion of this union
+        } DoNotUse;
         struct
         {
             ULONG SubMenuIndex;
@@ -142,8 +164,8 @@ typedef struct _PH_PLUGIN_MENU_INFORMATION
         struct
         {
             HANDLE ProcessId;
-            PPH_MEMORY_ITEM *MemoryItems;
-            ULONG NumberOfMemoryItems;
+            PPH_MEMORY_NODE *MemoryNodes;
+            ULONG NumberOfMemoryNodes;
         } Memory;
         struct
         {
@@ -151,14 +173,32 @@ typedef struct _PH_PLUGIN_MENU_INFORMATION
             PPH_HANDLE_ITEM *Handles;
             ULONG NumberOfHandles;
         } Handle;
+        struct
+        {
+            PPH_STRINGREF SectionName;
+            PPH_PROCESS_GROUP ProcessGroup;
+        } MiListSection;
     } u;
+
+    ULONG Flags;
+    PPH_LIST PluginHookList;
 } PH_PLUGIN_MENU_INFORMATION, *PPH_PLUGIN_MENU_INFORMATION;
+
+C_ASSERT(RTL_FIELD_SIZE(PH_PLUGIN_MENU_INFORMATION, u) == RTL_FIELD_SIZE(PH_PLUGIN_MENU_INFORMATION, u.DoNotUse));
+
+typedef struct _PH_PLUGIN_MENU_HOOK_INFORMATION
+{
+    PPH_PLUGIN_MENU_INFORMATION MenuInfo;
+    PPH_EMENU SelectedItem;
+    PVOID Context;
+    BOOLEAN Handled;
+} PH_PLUGIN_MENU_HOOK_INFORMATION, *PPH_PLUGIN_MENU_HOOK_INFORMATION;
 
 typedef struct _PH_PLUGIN_TREENEW_INFORMATION
 {
     HWND TreeNewHandle;
     PVOID CmData;
-    PVOID SystemContext;
+    PVOID SystemContext; // e.g. PPH_THREADS_CONTEXT
 } PH_PLUGIN_TREENEW_INFORMATION, *PPH_PLUGIN_TREENEW_INFORMATION;
 
 typedef enum _PH_PLUGIN_THREAD_STACK_CONTROL_TYPE
@@ -168,8 +208,18 @@ typedef enum _PH_PLUGIN_THREAD_STACK_CONTROL_TYPE
     PluginThreadStackResolveSymbol,
     PluginThreadStackGetTooltip,
     PluginThreadStackWalkStack,
+    PluginThreadStackBeginDefaultWalkStack,
+    PluginThreadStackEndDefaultWalkStack,
     PluginThreadStackMaximum
 } PH_PLUGIN_THREAD_STACK_CONTROL_TYPE;
+
+typedef struct _PH_SYMBOL_PROVIDER *PPH_SYMBOL_PROVIDER;
+typedef struct _PH_THREAD_STACK_FRAME *PPH_THREAD_STACK_FRAME;
+
+typedef BOOLEAN (NTAPI *PPH_PLUGIN_WALK_THREAD_STACK_CALLBACK)(
+    _In_ PPH_THREAD_STACK_FRAME StackFrame,
+    _In_opt_ PVOID Context
+    );
 
 typedef struct _PH_PLUGIN_THREAD_STACK_CONTROL
 {
@@ -203,11 +253,30 @@ typedef struct _PH_PLUGIN_THREAD_STACK_CONTROL
             HANDLE ProcessHandle;
             PCLIENT_ID ClientId;
             ULONG Flags;
-            PPH_WALK_THREAD_STACK_CALLBACK Callback;
+            PPH_PLUGIN_WALK_THREAD_STACK_CALLBACK Callback;
             PVOID CallbackContext;
         } WalkStack;
     } u;
 } PH_PLUGIN_THREAD_STACK_CONTROL, *PPH_PLUGIN_THREAD_STACK_CONTROL;
+
+typedef enum _PH_PLUGIN_MEMORY_ITEM_LIST_CONTROL_TYPE
+{
+    PluginMemoryItemListInitialized,
+    PluginMemoryItemListMaximum
+} PH_PLUGIN_MEMORY_ITEM_LIST_CONTROL_TYPE;
+
+typedef struct _PH_PLUGIN_MEMORY_ITEM_LIST_CONTROL
+{
+    PH_PLUGIN_MEMORY_ITEM_LIST_CONTROL_TYPE Type;
+
+    union
+    {
+        struct
+        {
+            PPH_MEMORY_ITEM_LIST List;
+        } Initialized;
+    } u;
+} PH_PLUGIN_MEMORY_ITEM_LIST_CONTROL, *PPH_PLUGIN_MEMORY_ITEM_LIST_CONTROL;
 
 typedef PPH_SYSINFO_SECTION (NTAPI *PPH_SYSINFO_CREATE_SECTION)(
     _In_ PPH_SYSINFO_SECTION Template
@@ -234,6 +303,28 @@ typedef struct _PH_PLUGIN_SYSINFO_POINTERS
     PPH_SYSINFO_RESTORE_SUMMARY_VIEW RestoreSummaryView;
 } PH_PLUGIN_SYSINFO_POINTERS, *PPH_PLUGIN_SYSINFO_POINTERS;
 
+typedef PPH_MINIINFO_SECTION (NTAPI *PPH_MINIINFO_CREATE_SECTION)(
+    _In_ PPH_MINIINFO_SECTION Template
+    );
+
+typedef PPH_MINIINFO_SECTION (NTAPI *PPH_MINIINFO_FIND_SECTION)(
+    _In_ PPH_STRINGREF Name
+    );
+
+typedef PPH_MINIINFO_LIST_SECTION (NTAPI *PPH_MINIINFO_CREATE_LIST_SECTION)(
+    _In_ PWSTR Name,
+    _In_ ULONG Flags,
+    _In_ PPH_MINIINFO_LIST_SECTION Template
+    );
+
+typedef struct _PH_PLUGIN_MINIINFO_POINTERS
+{
+    HWND WindowHandle;
+    PPH_MINIINFO_CREATE_SECTION CreateSection;
+    PPH_MINIINFO_FIND_SECTION FindSection;
+    PPH_MINIINFO_CREATE_LIST_SECTION CreateListSection;
+} PH_PLUGIN_MINIINFO_POINTERS, *PPH_PLUGIN_MINIINFO_POINTERS;
+
 typedef struct _PH_PLUGIN_TREENEW_MESSAGE
 {
     HWND TreeNewHandle;
@@ -251,16 +342,57 @@ typedef LONG (NTAPI *PPH_PLUGIN_TREENEW_SORT_FUNCTION)(
     _In_ PVOID Context
     );
 
-typedef enum _PH_PLUGIN_CALLBACK
-{
-    PluginCallbackLoad = 0, // [main thread]
-    PluginCallbackUnload = 1, // [main thread]
-    PluginCallbackShowOptions = 2, // HWND ParentWindowHandle [main thread]
-    PluginCallbackMenuItem = 3, // PPH_PLUGIN_MENU_ITEM MenuItem [main/properties thread]
-    PluginCallbackTreeNewMessage = 4, // PPH_PLUGIN_TREENEW_MESSAGE Message [main/properties thread]
+typedef NTSTATUS (NTAPI *PPHSVC_SERVER_PROBE_BUFFER)(
+    _In_ PPH_RELATIVE_STRINGREF String,
+    _In_ ULONG Alignment,
+    _In_ BOOLEAN AllowNull,
+    _Out_ PVOID *Pointer
+    );
 
-    PluginCallbackMaximum
-} PH_PLUGIN_CALLBACK, *PPH_PLUGIN_CALLBACK;
+typedef NTSTATUS (NTAPI *PPHSVC_SERVER_CAPTURE_BUFFER)(
+    _In_ PPH_RELATIVE_STRINGREF String,
+    _In_ BOOLEAN AllowNull,
+    _Out_ PVOID *CapturedBuffer
+    );
+
+typedef NTSTATUS (NTAPI *PPHSVC_SERVER_CAPTURE_STRING)(
+    _In_ PPH_RELATIVE_STRINGREF String,
+    _In_ BOOLEAN AllowNull,
+    _Out_ PPH_STRING *CapturedString
+    );
+
+typedef struct _PH_PLUGIN_PHSVC_REQUEST
+{
+    ULONG SubId;
+    NTSTATUS ReturnStatus;
+    PVOID InBuffer;
+    ULONG InLength;
+    PVOID OutBuffer;
+    ULONG OutLength;
+
+    PPHSVC_SERVER_PROBE_BUFFER ProbeBuffer;
+    PPHSVC_SERVER_CAPTURE_BUFFER CaptureBuffer;
+    PPHSVC_SERVER_CAPTURE_STRING CaptureString;
+} PH_PLUGIN_PHSVC_REQUEST, *PPH_PLUGIN_PHSVC_REQUEST;
+
+typedef VOID (NTAPI *PPHSVC_CLIENT_FREE_HEAP)(
+    _In_ PVOID Memory
+    );
+
+typedef PVOID (NTAPI *PPHSVC_CLIENT_CREATE_STRING)(
+    _In_opt_ PVOID String,
+    _In_ SIZE_T Length,
+    _Out_ PPH_RELATIVE_STRINGREF StringRef
+    );
+
+typedef struct _PH_PLUGIN_PHSVC_CLIENT
+{
+    HANDLE ServerProcessId;
+    PPHSVC_CLIENT_FREE_HEAP FreeHeap;
+    PPHSVC_CLIENT_CREATE_STRING CreateString;
+} PH_PLUGIN_PHSVC_CLIENT, *PPH_PLUGIN_PHSVC_CLIENT;
+
+// Plugin structures
 
 typedef struct _PH_PLUGIN_INFORMATION
 {
@@ -270,24 +402,38 @@ typedef struct _PH_PLUGIN_INFORMATION
     PWSTR Url;
     BOOLEAN HasOptions;
     BOOLEAN Reserved1[3];
+    PVOID Interface;
 } PH_PLUGIN_INFORMATION, *PPH_PLUGIN_INFORMATION;
 
 #define PH_PLUGIN_FLAG_RESERVED 0x1
+// end_phapppub
 
+// begin_phapppub
 typedef struct _PH_PLUGIN
 {
+    // Public
+
     PH_AVL_LINKS Links;
 
-    PWSTR Name;
+    PVOID Reserved;
     PVOID DllBase;
+// end_phapppub
+
+    // Private
+
     PPH_STRING FileName;
     ULONG Flags;
-
+    PH_STRINGREF Name;
     PH_PLUGIN_INFORMATION Information;
 
     PH_CALLBACK Callbacks[PluginCallbackMaximum];
     PH_EM_APP_CONTEXT AppContext;
+// begin_phapppub
 } PH_PLUGIN, *PPH_PLUGIN;
+// end_phapppub
+
+// begin_phapppub
+// Plugin API
 
 PHAPPAPI
 PPH_PLUGIN
@@ -303,6 +449,13 @@ PPH_PLUGIN
 NTAPI
 PhFindPlugin(
     _In_ PWSTR Name
+    );
+
+PHAPPAPI
+PPH_PLUGIN_INFORMATION
+NTAPI
+PhGetPluginInformation(
+    _In_ PPH_PLUGIN Plugin
     );
 
 PHAPPAPI
@@ -423,11 +576,30 @@ PhPluginCreateEMenuItem(
 PHAPPAPI
 BOOLEAN
 NTAPI
-PhPluginTriggerEMenuItem(
+PhPluginAddMenuHook(
+    _Inout_ PPH_PLUGIN_MENU_INFORMATION MenuInfo,
+    _In_ PPH_PLUGIN Plugin,
+    _In_opt_ PVOID Context
+    );
+// end_phapppub
+
+VOID
+NTAPI
+PhPluginInitializeMenuInfo(
+    _Out_ PPH_PLUGIN_MENU_INFORMATION MenuInfo,
+    _In_opt_ PPH_EMENU Menu,
     _In_ HWND OwnerWindow,
+    _In_ ULONG Flags
+    );
+
+BOOLEAN
+NTAPI
+PhPluginTriggerEMenuItem(
+    _In_ PPH_PLUGIN_MENU_INFORMATION MenuInfo,
     _In_ PPH_EMENU_ITEM Item
     );
 
+// begin_phapppub
 PHAPPAPI
 BOOLEAN
 NTAPI
@@ -480,8 +652,24 @@ PhPluginEnableTreeNewNotify(
     _In_ PVOID CmData
     );
 
-#ifdef __cplusplus
-}
-#endif
+PHAPPAPI
+BOOLEAN
+NTAPI
+PhPluginQueryPhSvc(
+    _Out_ PPH_PLUGIN_PHSVC_CLIENT Client
+    );
+
+PHAPPAPI
+NTSTATUS
+NTAPI
+PhPluginCallPhSvc(
+    _In_ PPH_PLUGIN Plugin,
+    _In_ ULONG SubId,
+    _In_reads_bytes_opt_(InLength) PVOID InBuffer,
+    _In_ ULONG InLength,
+    _Out_writes_bytes_opt_(OutLength) PVOID OutBuffer,
+    _In_ ULONG OutLength
+    );
+// end_phapppub
 
 #endif

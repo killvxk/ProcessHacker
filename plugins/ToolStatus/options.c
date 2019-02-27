@@ -1,8 +1,8 @@
 /*
  * Process Hacker ToolStatus -
- *   rebar code
+ *   Plugin Options
  *
- * Copyright (C) 2011-2013 dmex
+ * Copyright (C) 2011-2016 dmex
  * Copyright (C) 2010-2013 wj32
  *
  * This file is part of Process Hacker.
@@ -23,7 +23,7 @@
 
 #include "toolstatus.h"
 
-INT_PTR CALLBACK OptionsDlgProc(
+static INT_PTR CALLBACK OptionsDlgProc(
     _In_ HWND hwndDlg,
     _In_ UINT uMsg,
     _In_ WPARAM wParam,
@@ -34,44 +34,46 @@ INT_PTR CALLBACK OptionsDlgProc(
     {
     case WM_INITDIALOG:
         {
-            HWND comboHandle = GetDlgItem(hwndDlg, IDC_DISPLAYSTYLECOMBO);
+            Button_SetCheck(GetDlgItem(hwndDlg, IDC_ENABLE_TOOLBAR),
+                ToolStatusConfig.ToolBarEnabled ? BST_CHECKED : BST_UNCHECKED);
 
-            ComboBox_AddString(comboHandle, L"Images only");
-            ComboBox_AddString(comboHandle, L"Selective text");
-            ComboBox_AddString(comboHandle, L"All text");
-            ComboBox_SetCurSel(comboHandle, PhGetIntegerSetting(L"ProcessHacker.ToolStatus.ToolbarDisplayStyle"));
+            Button_SetCheck(GetDlgItem(hwndDlg, IDC_ENABLE_STATUSBAR),
+                ToolStatusConfig.StatusBarEnabled ? BST_CHECKED : BST_UNCHECKED);
 
-            Button_SetCheck(GetDlgItem(hwndDlg, IDC_ENABLE_TOOLBAR), 
-                PhGetIntegerSetting(L"ProcessHacker.ToolStatus.EnableToolBar") ? BST_CHECKED : BST_UNCHECKED);
-            Button_SetCheck(GetDlgItem(hwndDlg, IDC_ENABLE_SEARCHBOX), 
-                PhGetIntegerSetting(L"ProcessHacker.ToolStatus.EnableSearchBox") ? BST_CHECKED : BST_UNCHECKED);
-            Button_SetCheck(GetDlgItem(hwndDlg, IDC_ENABLE_STATUSBAR), 
-                PhGetIntegerSetting(L"ProcessHacker.ToolStatus.EnableStatusBar") ? BST_CHECKED : BST_UNCHECKED);
             Button_SetCheck(GetDlgItem(hwndDlg, IDC_RESOLVEGHOSTWINDOWS),
-                PhGetIntegerSetting(L"ProcessHacker.ToolStatus.ResolveGhostWindows") ? BST_CHECKED : BST_UNCHECKED);
+                ToolStatusConfig.ResolveGhostWindows ? BST_CHECKED : BST_UNCHECKED);
+
+            Button_SetCheck(GetDlgItem(hwndDlg, IDC_ENABLE_AUTOHIDE_MENU),
+                ToolStatusConfig.AutoHideMenu ? BST_CHECKED : BST_UNCHECKED);
         }
         break;
     case WM_COMMAND:
         {
-            switch (LOWORD(wParam))
+            switch (GET_WM_COMMAND_ID(wParam, lParam))
             {
             case IDCANCEL:
                 EndDialog(hwndDlg, IDCANCEL);
                 break;
             case IDOK:
                 {
-                    PhSetIntegerSetting(L"ProcessHacker.ToolStatus.ToolbarDisplayStyle",
-                        (DisplayStyle = (TOOLBAR_DISPLAY_STYLE)ComboBox_GetCurSel(GetDlgItem(hwndDlg, IDC_DISPLAYSTYLECOMBO))));
-                    PhSetIntegerSetting(L"ProcessHacker.ToolStatus.EnableToolBar",
-                        (EnableToolBar = Button_GetCheck(GetDlgItem(hwndDlg, IDC_ENABLE_TOOLBAR)) == BST_CHECKED));
-                    PhSetIntegerSetting(L"ProcessHacker.ToolStatus.EnableSearchBox",
-                        (EnableSearchBox = Button_GetCheck(GetDlgItem(hwndDlg, IDC_ENABLE_SEARCHBOX)) == BST_CHECKED));
-                    PhSetIntegerSetting(L"ProcessHacker.ToolStatus.EnableStatusBar",
-                        (EnableStatusBar = Button_GetCheck(GetDlgItem(hwndDlg, IDC_ENABLE_STATUSBAR)) == BST_CHECKED));
-                    PhSetIntegerSetting(L"ProcessHacker.ToolStatus.ResolveGhostWindows",
-                        Button_GetCheck(GetDlgItem(hwndDlg, IDC_RESOLVEGHOSTWINDOWS)) == BST_CHECKED);
+                    ToolStatusConfig.ToolBarEnabled = Button_GetCheck(GetDlgItem(hwndDlg, IDC_ENABLE_TOOLBAR)) == BST_CHECKED;
+                    ToolStatusConfig.StatusBarEnabled = Button_GetCheck(GetDlgItem(hwndDlg, IDC_ENABLE_STATUSBAR)) == BST_CHECKED;
+                    ToolStatusConfig.ResolveGhostWindows = Button_GetCheck(GetDlgItem(hwndDlg, IDC_RESOLVEGHOSTWINDOWS)) == BST_CHECKED;
+                    ToolStatusConfig.AutoHideMenu = Button_GetCheck(GetDlgItem(hwndDlg, IDC_ENABLE_AUTOHIDE_MENU)) == BST_CHECKED;
 
-                    LoadToolbarSettings();
+                    PhSetIntegerSetting(SETTING_NAME_TOOLSTATUS_CONFIG, ToolStatusConfig.Flags);
+
+                    ToolbarLoadSettings();
+
+                    if (ToolStatusConfig.AutoHideMenu)
+                    {
+                        SetMenu(PhMainWndHandle, NULL);
+                    }
+                    else
+                    {
+                        SetMenu(PhMainWndHandle, MainMenu);
+                        DrawMenuBar(PhMainWndHandle);
+                    }
 
                     EndDialog(hwndDlg, IDOK);
                 }
@@ -82,4 +84,16 @@ INT_PTR CALLBACK OptionsDlgProc(
     }
 
     return FALSE;
+}
+
+VOID ShowOptionsDialog(
+    _In_opt_ HWND Parent
+    )
+{
+    DialogBox(
+        PluginInstance->DllBase,
+        MAKEINTRESOURCE(IDD_OPTIONS),
+        Parent,
+        OptionsDlgProc
+        );
 }

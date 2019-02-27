@@ -2,7 +2,7 @@
  * Process Hacker .NET Tools -
  *   .NET Assemblies property page
  *
- * Copyright (C) 2011-2013 wj32
+ * Copyright (C) 2011-2015 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -25,7 +25,6 @@
 #include <windowsx.h>
 #include <evntcons.h>
 #include "clretw.h"
-#include <colmgr.h>
 
 #define DNATNC_STRUCTURE 0
 #define DNATNC_ID 1
@@ -204,7 +203,7 @@ PPH_STRING FlagsToString(
     }
 
     if (sb.String->Length != 0)
-        PhRemoveStringBuilder(&sb, sb.String->Length / 2 - 2, 2);
+        PhRemoveEndStringBuilder(&sb, 2);
 
     return PhFinalStringBuilderString(&sb);
 }
@@ -482,7 +481,6 @@ BOOLEAN NTAPI DotNetAsmTreeNewCallback(
 }
 
 ULONG StartDotNetTrace(
-    _In_ PASMPAGE_CONTEXT Context,
     _Out_ PTRACEHANDLE SessionHandle,
     _Out_ PEVENT_TRACE_PROPERTIES *Properties
     )
@@ -505,12 +503,12 @@ ULONG StartDotNetTrace(
 
     result = StartTrace(&sessionHandle, DotNetLoggerName.Buffer, properties);
 
-    if (result == 0)
+    if (result == ERROR_SUCCESS)
     {
         *SessionHandle = sessionHandle;
         *Properties = properties;
 
-        return 0;
+        return ERROR_SUCCESS;
     }
     else if (result == ERROR_ALREADY_EXISTS)
     {
@@ -518,7 +516,7 @@ ULONG StartDotNetTrace(
 
         result = ControlTrace(0, DotNetLoggerName.Buffer, properties, EVENT_TRACE_CONTROL_QUERY);
 
-        if (result != 0)
+        if (result != ERROR_SUCCESS)
         {
             PhFree(properties);
             return result;
@@ -527,7 +525,7 @@ ULONG StartDotNetTrace(
         *SessionHandle = properties->Wnode.HistoricalContext;
         *Properties = properties;
 
-        return 0;
+        return ERROR_SUCCESS;
     }
     else
     {
@@ -610,7 +608,7 @@ VOID NTAPI DotNetEventCallback(
                 PDNA_NODE parentNode;
                 PDNA_NODE node;
 
-                appDomainNameLength = wcslen(data->AppDomainName) * sizeof(WCHAR);
+                appDomainNameLength = PhCountStringZ(data->AppDomainName) * sizeof(WCHAR);
                 clrInstanceID = *(PUSHORT)((PCHAR)data + FIELD_OFFSET(AppDomainLoadUnloadRundown_V1, AppDomainName) + appDomainNameLength + sizeof(WCHAR) + sizeof(ULONG));
 
                 // Find the CLR node to add the AppDomain node to.
@@ -643,7 +641,7 @@ VOID NTAPI DotNetEventCallback(
                 PDNA_NODE node;
                 PH_STRINGREF remainingPart;
 
-                fullyQualifiedAssemblyNameLength = wcslen(data->FullyQualifiedAssemblyName) * sizeof(WCHAR);
+                fullyQualifiedAssemblyNameLength = PhCountStringZ(data->FullyQualifiedAssemblyName) * sizeof(WCHAR);
                 clrInstanceID = *(PUSHORT)((PCHAR)data + FIELD_OFFSET(AssemblyLoadUnloadRundown_V1, FullyQualifiedAssemblyName) + fullyQualifiedAssemblyNameLength + sizeof(WCHAR));
 
                 // Find the AppDomain node to add the Assembly node to.
@@ -686,9 +684,9 @@ VOID NTAPI DotNetEventCallback(
                 PDNA_NODE node;
 
                 moduleILPath = data->ModuleILPath;
-                moduleILPathLength = wcslen(moduleILPath) * sizeof(WCHAR);
+                moduleILPathLength = PhCountStringZ(moduleILPath) * sizeof(WCHAR);
                 moduleNativePath = (PWSTR)((PCHAR)moduleILPath + moduleILPathLength + sizeof(WCHAR));
-                moduleNativePathLength = wcslen(moduleNativePath) * sizeof(WCHAR);
+                moduleNativePathLength = PhCountStringZ(moduleNativePath) * sizeof(WCHAR);
                 clrInstanceID = *(PUSHORT)((PCHAR)moduleNativePath + moduleNativePathLength + sizeof(WCHAR));
 
                 // Find the Assembly node to set the path on.
@@ -700,10 +698,10 @@ VOID NTAPI DotNetEventCallback(
 
                 if (node)
                 {
-                    PhSwapReference2(&node->PathText, PhCreateStringEx(moduleILPath, moduleILPathLength));
+                    PhMoveReference(&node->PathText, PhCreateStringEx(moduleILPath, moduleILPathLength));
 
                     if (moduleNativePathLength != 0)
-                        PhSwapReference2(&node->NativePathText, PhCreateStringEx(moduleNativePath, moduleNativePathLength));
+                        PhMoveReference(&node->NativePathText, PhCreateStringEx(moduleNativePath, moduleNativePathLength));
                 }
             }
             break;
@@ -735,9 +733,9 @@ VOID NTAPI DotNetEventCallback(
                     ULONG_PTR indexOfLastDot;
 
                     moduleILPath = data->ModuleILPath;
-                    moduleILPathLength = wcslen(moduleILPath) * sizeof(WCHAR);
+                    moduleILPathLength = PhCountStringZ(moduleILPath) * sizeof(WCHAR);
                     moduleNativePath = (PWSTR)((PCHAR)moduleILPath + moduleILPathLength + sizeof(WCHAR));
-                    moduleNativePathLength = wcslen(moduleNativePath) * sizeof(WCHAR);
+                    moduleNativePathLength = PhCountStringZ(moduleNativePath) * sizeof(WCHAR);
 
                     if (context->ClrV2Node && (moduleILPathLength != 0 || moduleNativePathLength != 0))
                     {
@@ -835,11 +833,11 @@ ULONG UpdateDotNetTraceInfo(
     PGUID guidToEnable;
 
     if (!EnableTraceEx_I)
-        EnableTraceEx_I = (_EnableTraceEx)PhGetProcAddress(L"advapi32.dll", "EnableTraceEx");
+        EnableTraceEx_I = PhGetModuleProcAddress(L"advapi32.dll", "EnableTraceEx");
     if (!EnableTraceEx_I)
         return ERROR_NOT_SUPPORTED;
 
-    result = StartDotNetTrace(Context, &sessionHandle, &properties);
+    result = StartDotNetTrace(&sessionHandle, &properties);
 
     if (result != 0)
         return result;
@@ -1141,7 +1139,7 @@ INT_PTR CALLBACK DotNetAsmPageDlgProc(
                     PPH_STRING text;
 
                     text = PhGetTreeNewText(context->TnHandle, 0);
-                    PhSetClipboardStringEx(context->TnHandle, text->Buffer, text->Length);
+                    PhSetClipboardString(context->TnHandle, &text->sr);
                     PhDereferenceObject(text);
                 }
                 break;

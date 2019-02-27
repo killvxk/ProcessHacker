@@ -1,14 +1,36 @@
+/*
+ * Process Hacker Plugins -
+ *   Update Checker Plugin
+ *
+ * Copyright (C) 2011-2015 dmex
+ *
+ * This file is part of Process Hacker.
+ *
+ * Process Hacker is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Process Hacker is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Process Hacker.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #ifndef __UPDATER_H__
 #define __UPDATER_H__
 
 #pragma comment(lib, "Winhttp.lib")
-#pragma comment(lib, "WindowsCodecs.lib")
 
 #define CINTERFACE
 #define COBJMACROS
 #define INITGUID
 #include <phdk.h>
 #include <phappresource.h>
+#include <verify.h>
 #include <mxml.h>
 #include <windowsx.h>
 #include <netlistmgr.h>
@@ -24,13 +46,14 @@
 #define PH_UPDATEAVAILABLE (WM_APP + 102)
 #define PH_UPDATEISCURRENT (WM_APP + 103)
 #define PH_UPDATENEWER     (WM_APP + 104)
-#define PH_HASHSUCCESS     (WM_APP + 105)
-#define PH_HASHFAILURE     (WM_APP + 106)
+#define PH_UPDATESUCCESS   (WM_APP + 105)
+#define PH_UPDATEFAILURE   (WM_APP + 106)
 #define WM_SHOWDIALOG      (WM_APP + 150)
 
-DEFINE_GUID(IID_IWICImagingFactory, 0xec5ec8a9, 0xc395, 0x4314, 0x9c, 0x77, 0x54, 0xd7, 0xa9, 0x35, 0xff, 0x70);
+#define PLUGIN_NAME L"ProcessHacker.UpdateChecker"
+#define SETTING_NAME_AUTO_CHECK (PLUGIN_NAME L".PromptStart")
+#define SETTING_NAME_LAST_CHECK (PLUGIN_NAME L".LastUpdateCheckTime")
 
-#define SETTING_AUTO_CHECK L"ProcessHacker.Updater.PromptStart"
 #define MAKEDLLVERULL(major, minor, build, revision) \
     (((ULONGLONG)(major) << 48) | \
     ((ULONGLONG)(minor) << 32) | \
@@ -54,7 +77,7 @@ typedef struct _PH_UPDATER_CONTEXT
 {
     BOOLEAN HaveData;
     PH_UPDATER_STATE UpdaterState;
-    HBITMAP SourceforgeBitmap;
+    HBITMAP IconBitmap;
     HICON IconHandle;
     HFONT FontHandle;
     HWND StatusHandle;
@@ -67,7 +90,6 @@ typedef struct _PH_UPDATER_CONTEXT
     ULONG CurrentMinorVersion;
     ULONG CurrentMajorVersion;
     ULONG CurrentRevisionVersion;
-    PPH_STRING UserAgent;
     PPH_STRING Version;
     PPH_STRING RevVersion;
     PPH_STRING RelDate;

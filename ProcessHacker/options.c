@@ -2,7 +2,7 @@
  * Process Hacker -
  *   options window
  *
- * Copyright (C) 2010-2013 wj32
+ * Copyright (C) 2010-2015 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -23,6 +23,7 @@
 #include <phapp.h>
 #include <settings.h>
 #include <colorbox.h>
+#include <sysinfo.h>
 #include <windowsx.h>
 
 #define WM_PH_CHILD_EXIT (WM_APP + 301)
@@ -175,7 +176,7 @@ VOID PhShowOptionsDialog(
 
     OldTaskMgrDebugger = NULL;
 
-    PropertySheet(&propSheetHeader);
+    PhModalPropertySheet(&propSheetHeader);
 
     if (PressedOk)
     {
@@ -366,14 +367,9 @@ static BOOLEAN GetCurrentFont(
     PPH_STRING fontHexString;
 
     if (NewFontSelection)
-    {
-        fontHexString = NewFontSelection;
-        PhReferenceObject(NewFontSelection);
-    }
+        PhSetReference(&fontHexString, NewFontSelection);
     else
-    {
         fontHexString = PhGetStringSetting(L"Font");
-    }
 
     if (fontHexString->Length / 2 / 2 == sizeof(LOGFONT))
         result = PhHexStringToBuffer(&fontHexString->sr, (PUCHAR)Font);
@@ -407,8 +403,8 @@ INT_PTR CALLBACK PhpOptionsGeneralDlgProc(
             for (i = 0; i < sizeof(PhSizeUnitNames) / sizeof(PWSTR); i++)
                 ComboBox_AddString(comboBoxHandle, PhSizeUnitNames[i]);
 
-            SetDlgItemText(hwndDlg, IDC_SEARCHENGINE, PHA_GET_STRING_SETTING(L"SearchEngine")->Buffer);
-            SetDlgItemText(hwndDlg, IDC_PEVIEWER, PHA_GET_STRING_SETTING(L"ProgramInspectExecutables")->Buffer);
+            SetDlgItemText(hwndDlg, IDC_SEARCHENGINE, PhaGetStringSetting(L"SearchEngine")->Buffer);
+            SetDlgItemText(hwndDlg, IDC_PEVIEWER, PhaGetStringSetting(L"ProgramInspectExecutables")->Buffer);
 
             if (PhMaxSizeUnit != -1)
                 ComboBox_SetCurSel(comboBoxHandle, PhMaxSizeUnit);
@@ -441,7 +437,7 @@ INT_PTR CALLBACK PhpOptionsGeneralDlgProc(
             if (CurrentFontInstance)
                 DeleteObject(CurrentFontInstance);
 
-            PhSwapReference(&NewFontSelection, NULL);
+            PhClearReference(&NewFontSelection);
         }
         break;
     case WM_COMMAND:
@@ -469,7 +465,7 @@ INT_PTR CALLBACK PhpOptionsGeneralDlgProc(
 
                     if (ChooseFont(&chooseFont))
                     {
-                        PhSwapReference2(&NewFontSelection, PhBufferToHexString((PUCHAR)&font, sizeof(LOGFONT)));
+                        PhMoveReference(&NewFontSelection, PhBufferToHexString((PUCHAR)&font, sizeof(LOGFONT)));
 
                         // Update the button's font.
 
@@ -492,8 +488,8 @@ INT_PTR CALLBACK PhpOptionsGeneralDlgProc(
             {
             case PSN_APPLY:
                 {
-                    PhSetStringSetting2(L"SearchEngine", &(PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_SEARCHENGINE)->sr));
-                    PhSetStringSetting2(L"ProgramInspectExecutables", &(PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_PEVIEWER)->sr));
+                    PhSetStringSetting2(L"SearchEngine", &(PhaGetDlgItemText(hwndDlg, IDC_SEARCHENGINE)->sr));
+                    PhSetStringSetting2(L"ProgramInspectExecutables", &(PhaGetDlgItemText(hwndDlg, IDC_PEVIEWER)->sr));
                     PhSetIntegerSetting(L"MaxSizeUnit", PhMaxSizeUnit = ComboBox_GetCurSel(GetDlgItem(hwndDlg, IDC_MAXSIZEUNIT)));
                     PhSetIntegerSetting(L"IconProcesses", GetDlgItemInt(hwndDlg, IDC_ICONPROCESSES, NULL, FALSE));
                     SetSettingForDlgItemCheck(hwndDlg, IDC_ALLOWONLYONEINSTANCE, L"AllowOnlyOneInstance");
@@ -845,8 +841,8 @@ INT_PTR CALLBACK PhpOptionsSymbolsDlgProc(
         {
             PhpPageInit(hwndDlg);
 
-            SetDlgItemText(hwndDlg, IDC_DBGHELPPATH, PHA_GET_STRING_SETTING(L"DbgHelpPath")->Buffer);
-            SetDlgItemText(hwndDlg, IDC_DBGHELPSEARCHPATH, PHA_GET_STRING_SETTING(L"DbgHelpSearchPath")->Buffer);
+            SetDlgItemText(hwndDlg, IDC_DBGHELPPATH, PhaGetStringSetting(L"DbgHelpPath")->Buffer);
+            SetDlgItemText(hwndDlg, IDC_DBGHELPSEARCHPATH, PhaGetStringSetting(L"DbgHelpSearchPath")->Buffer);
 
             SetDlgItemCheckForSetting(hwndDlg, IDC_UNDECORATESYMBOLS, L"DbgHelpUndecorate");
         }
@@ -868,7 +864,7 @@ INT_PTR CALLBACK PhpOptionsSymbolsDlgProc(
                     fileDialog = PhCreateOpenFileDialog();
                     PhSetFileDialogFilter(fileDialog, filters, sizeof(filters) / sizeof(PH_FILETYPE_FILTER));
 
-                    fileName = PhGetFileName(PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_DBGHELPPATH));
+                    fileName = PhGetFileName(PhaGetDlgItemText(hwndDlg, IDC_DBGHELPPATH));
                     PhSetFileDialogFileName(fileDialog, fileName->Buffer);
                     PhDereferenceObject(fileName);
 
@@ -896,14 +892,14 @@ INT_PTR CALLBACK PhpOptionsSymbolsDlgProc(
                     PPH_STRING dbgHelpPath;
                     PPH_STRING existingDbgHelpPath;
 
-                    dbgHelpPath = PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_DBGHELPPATH);
-                    existingDbgHelpPath = PHA_DEREFERENCE(PhGetStringSetting(L"DbgHelpPath"));
+                    dbgHelpPath = PhaGetDlgItemText(hwndDlg, IDC_DBGHELPPATH);
+                    existingDbgHelpPath = PhAutoDereferenceObject(PhGetStringSetting(L"DbgHelpPath"));
 
                     if (!PhEqualString(dbgHelpPath, existingDbgHelpPath, TRUE))
                         RestartRequired = TRUE;
 
                     PhSetStringSetting2(L"DbgHelpPath", &dbgHelpPath->sr);
-                    PhSetStringSetting2(L"DbgHelpSearchPath", &(PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_DBGHELPSEARCHPATH)->sr));
+                    PhSetStringSetting2(L"DbgHelpSearchPath", &(PhaGetDlgItemText(hwndDlg, IDC_DBGHELPSEARCHPATH)->sr));
                     SetSettingForDlgItemCheck(hwndDlg, IDC_UNDECORATESYMBOLS, L"DbgHelpUndecorate");
 
                     SetWindowLongPtr(hwndDlg, DWLP_MSGRESULT, PSNRET_NOERROR);
@@ -939,15 +935,15 @@ static COLOR_ITEM ColorItems[] =
     COLOR_ITEM(L"ColorSystemProcesses", L"System Processes", L"Processes running under the NT AUTHORITY\\SYSTEM user account."),
     COLOR_ITEM(L"ColorServiceProcesses", L"Service Processes", L"Processes which host one or more services."),
     COLOR_ITEM(L"ColorJobProcesses", L"Job Processes", L"Processes associated with a job."),
-#ifdef _M_X64
+#ifdef _WIN64
     COLOR_ITEM(L"ColorWow64Processes", L"32-bit Processes", L"Processes running under WOW64, i.e. 32-bit."),
 #endif
     COLOR_ITEM(L"ColorPosixProcesses", L"POSIX Processes", L"Processes running under the POSIX subsystem."),
     COLOR_ITEM(L"ColorDebuggedProcesses", L"Debugged Processes", L"Processes that are currently being debugged."),
     COLOR_ITEM(L"ColorElevatedProcesses", L"Elevated Processes", L"Processes with full privileges on a system with UAC enabled."),
-    COLOR_ITEM(L"ColorImmersiveProcesses", L"Immersive Processes", L"Processes that belong to a Metro style app."),
+    COLOR_ITEM(L"ColorImmersiveProcesses", L"Immersive Processes and DLLs", L"Processes and DLLs that belong to a Modern UI app."),
     COLOR_ITEM(L"ColorSuspended", L"Suspended Processes and Threads", L"Processes and threads that are suspended from execution."),
-    COLOR_ITEM(L"ColorDotNet", L".NET Processes and DLLs", L".NET, or managed processes and DLLs."),
+    COLOR_ITEM(L"ColorDotNet", L".NET Processes and DLLs", L".NET (i.e. managed) processes and DLLs."),
     COLOR_ITEM(L"ColorPacked", L"Packed Processes", L"Executables are sometimes \"packed\" to reduce their size."),
     COLOR_ITEM(L"ColorGuiThreads", L"GUI Threads", L"Threads that have made at least one GUI-related system call."),
     COLOR_ITEM(L"ColorRelocatedModules", L"Relocated DLLs", L"DLLs that were not loaded at their preferred image bases."),
@@ -1090,7 +1086,7 @@ INT_PTR CALLBACK PhpOptionsHighlightingDlgProc(
                         NMLVGETINFOTIP *getInfoTip = (NMLVGETINFOTIP *)lParam;
                         PH_STRINGREF tip;
 
-                        PhInitializeStringRef(&tip, ColorItems[getInfoTip->iItem].Description);
+                        PhInitializeStringRefLongHint(&tip, ColorItems[getInfoTip->iItem].Description);
                         PhCopyListViewInfoTip(getInfoTip, &tip);
                     }
                 }

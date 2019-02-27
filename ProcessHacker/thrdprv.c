@@ -30,6 +30,7 @@
 #define PH_THRDPRV_PRIVATE
 #include <phapp.h>
 #include <kphuser.h>
+#include <symprv.h>
 #include <extmgri.h>
 
 typedef struct _PH_THREAD_QUERY_DATA
@@ -37,6 +38,7 @@ typedef struct _PH_THREAD_QUERY_DATA
     SLIST_ENTRY ListEntry;
     PPH_THREAD_PROVIDER ThreadProvider;
     PPH_THREAD_ITEM ThreadItem;
+    ULONG64 RunId;
 
     PPH_STRING StartAddressString;
     PH_SYMBOL_RESOLVE_LEVEL StartAddressResolveLevel;
@@ -54,10 +56,6 @@ typedef struct _PH_THREAD_SYMBOL_LOAD_CONTEXT
 VOID NTAPI PhpThreadProviderDeleteProcedure(
     _In_ PVOID Object,
     _In_ ULONG Flags
-    );
-
-NTSTATUS PhpThreadProviderLoadSymbols(
-    _In_ PVOID Parameter
     );
 
 VOID NTAPI PhpThreadItemDeleteProcedure(
@@ -94,21 +92,8 @@ BOOLEAN PhThreadProviderInitialization(
     VOID
     )
 {
-    if (!NT_SUCCESS(PhCreateObjectType(
-        &PhThreadProviderType,
-        L"ThreadProvider",
-        0,
-        PhpThreadProviderDeleteProcedure
-        )))
-        return FALSE;
-
-    if (!NT_SUCCESS(PhCreateObjectType(
-        &PhThreadItemType,
-        L"ThreadItem",
-        0,
-        PhpThreadItemDeleteProcedure
-        )))
-        return FALSE;
+    PhThreadProviderType = PhCreateObjectType(L"ThreadProvider", 0, PhpThreadProviderDeleteProcedure);
+    PhThreadItemType = PhCreateObjectType(L"ThreadItem", 0, PhpThreadItemDeleteProcedure);
 
     return TRUE;
 }
@@ -133,13 +118,11 @@ PPH_THREAD_PROVIDER PhCreateThreadProvider(
 {
     PPH_THREAD_PROVIDER threadProvider;
 
-    if (!NT_SUCCESS(PhCreateObject(
-        &threadProvider,
-        sizeof(PH_THREAD_PROVIDER),
-        0,
+    threadProvider = PhCreateObject(
+        PhEmGetObjectSize(EmThreadProviderType, sizeof(PH_THREAD_PROVIDER)),
         PhThreadProviderType
-        )))
-        return NULL;
+        );
+    memset(threadProvider, 0, sizeof(PH_THREAD_PROVIDER));
 
     threadProvider->ThreadHashtable = PhCreateHashtable(
         sizeof(PPH_THREAD_ITEM),
@@ -164,15 +147,13 @@ PPH_THREAD_PROVIDER PhCreateThreadProvider(
             threadProvider->ProcessHandle = threadProvider->SymbolProvider->ProcessHandle;
     }
 
-    PhInitializeEvent(&threadProvider->SymbolsLoadedEvent);
-    threadProvider->SymbolsLoading = 0;
     RtlInitializeSListHead(&threadProvider->QueryListHead);
+    PhInitializeQueuedLock(&threadProvider->LoadSymbolsLock);
 
     threadProvider->RunId = 1;
+    threadProvider->SymbolsLoadedRunId = 0; // Force symbols to be loaded the first time we try to resolve an address
 
-    // Begin loading symbols for the process' modules.
-    PhReferenceObject(threadProvider);
-    PhpQueueThreadWorkQueueItem(PhpThreadProviderLoadSymbols, threadProvider);
+    PhEmCallObjectOperation(EmThreadProviderType, threadProvider, EmObjectCreate);
 
     return threadProvider;
 }
@@ -183,6 +164,8 @@ VOID PhpThreadProviderDeleteProcedure(
     )
 {
     PPH_THREAD_PROVIDER threadProvider = (PPH_THREAD_PROVIDER)Object;
+
+    PhEmCallObjectOperation(EmThreadProviderType, threadProvider, EmObjectDelete);
 
     // Dereference all thread items (we referenced them
     // when we added them to the hashtable).
@@ -208,8 +191,8 @@ VOID PhpThreadProviderDeleteProcedure(
             data = CONTAINING_RECORD(entry, PH_THREAD_QUERY_DATA, ListEntry);
             entry = entry->Next;
 
-            if (data->StartAddressString) PhDereferenceObject(data->StartAddressString);
-            if (data->ServiceName) PhDereferenceObject(data->ServiceName);
+            PhClearReference(&data->StartAddressString);
+            PhClearReference(&data->ServiceName);
             PhDereferenceObject(data->ThreadItem);
             PhFree(data);
         }
@@ -238,6 +221,13 @@ VOID PhUnregisterThreadProvider(
     PhDereferenceObject(ThreadProvider);
 }
 
+VOID PhSetTerminatingThreadProvider(
+    _Inout_ PPH_THREAD_PROVIDER ThreadProvider
+    )
+{
+    ThreadProvider->Terminating = TRUE;
+}
+
 static BOOLEAN LoadSymbolsEnumGenericModulesCallback(
     _In_ PPH_MODULE_INFO Module,
     _In_opt_ PVOID Context
@@ -246,15 +236,18 @@ static BOOLEAN LoadSymbolsEnumGenericModulesCallback(
     PPH_THREAD_SYMBOL_LOAD_CONTEXT context = Context;
     PPH_SYMBOL_PROVIDER symbolProvider = context->SymbolProvider;
 
+    if (context->ThreadProvider->Terminating)
+        return FALSE;
+
     // If we're loading kernel module symbols for a process other than
     // System, ignore modules which are in user space. This may happen
     // in Windows 7.
-    if (
-        context->ProcessId == SYSTEM_PROCESS_ID &&
+    if (context->ProcessId == SYSTEM_PROCESS_ID &&
         context->ThreadProvider->ProcessId != SYSTEM_PROCESS_ID &&
-        (ULONG_PTR)Module->BaseAddress <= PhSystemBasicInformation.MaximumUserModeAddress
-        )
+        (ULONG_PTR)Module->BaseAddress <= PhSystemBasicInformation.MaximumUserModeAddress)
+    {
         return TRUE;
+    }
 
     PhLoadModuleSymbolProvider(
         symbolProvider,
@@ -274,10 +267,11 @@ static BOOLEAN LoadBasicSymbolsEnumGenericModulesCallback(
     PPH_THREAD_SYMBOL_LOAD_CONTEXT context = Context;
     PPH_SYMBOL_PROVIDER symbolProvider = context->SymbolProvider;
 
-    if (
-        PhEqualString2(Module->Name, L"ntdll.dll", TRUE) ||
-        PhEqualString2(Module->Name, L"kernel32.dll", TRUE)
-        )
+    if (context->ThreadProvider->Terminating)
+        return FALSE;
+
+    if (PhEqualString2(Module->Name, L"ntdll.dll", TRUE) ||
+        PhEqualString2(Module->Name, L"kernel32.dll", TRUE))
     {
         PhLoadModuleSymbolProvider(
             symbolProvider,
@@ -290,29 +284,29 @@ static BOOLEAN LoadBasicSymbolsEnumGenericModulesCallback(
     return TRUE;
 }
 
-NTSTATUS PhpThreadProviderLoadSymbols(
-    _In_ PVOID Parameter
+VOID PhLoadSymbolsThreadProvider(
+    _In_ PPH_THREAD_PROVIDER ThreadProvider
     )
 {
-    PPH_THREAD_PROVIDER threadProvider = (PPH_THREAD_PROVIDER)Parameter;
     PH_THREAD_SYMBOL_LOAD_CONTEXT loadContext;
+    ULONG64 runId;
 
-    loadContext.ThreadProvider = threadProvider;
-    loadContext.SymbolProvider = threadProvider->SymbolProvider;
+    loadContext.ThreadProvider = ThreadProvider;
+    loadContext.SymbolProvider = ThreadProvider->SymbolProvider;
 
-    PhLoadSymbolProviderOptions(threadProvider->SymbolProvider);
+    PhAcquireQueuedLockExclusive(&ThreadProvider->LoadSymbolsLock);
+    runId = ThreadProvider->RunId;
+    PhLoadSymbolProviderOptions(ThreadProvider->SymbolProvider);
 
-    if (threadProvider->ProcessId != SYSTEM_IDLE_PROCESS_ID)
+    if (ThreadProvider->ProcessId != SYSTEM_IDLE_PROCESS_ID)
     {
-        if (
-            threadProvider->SymbolProvider->IsRealHandle ||
-            threadProvider->ProcessId == SYSTEM_PROCESS_ID
-            )
+        if (ThreadProvider->SymbolProvider->IsRealHandle ||
+            ThreadProvider->ProcessId == SYSTEM_PROCESS_ID)
         {
-            loadContext.ProcessId = threadProvider->ProcessId;
+            loadContext.ProcessId = ThreadProvider->ProcessId;
             PhEnumGenericModules(
-                threadProvider->ProcessId,
-                threadProvider->SymbolProvider->ProcessHandle,
+                ThreadProvider->ProcessId,
+                ThreadProvider->SymbolProvider->ProcessHandle,
                 0,
                 LoadSymbolsEnumGenericModulesCallback,
                 &loadContext
@@ -333,7 +327,7 @@ NTSTATUS PhpThreadProviderLoadSymbols(
         }
 
         // Load kernel module symbols as well.
-        if (threadProvider->ProcessId != SYSTEM_PROCESS_ID)
+        if (ThreadProvider->ProcessId != SYSTEM_PROCESS_ID)
         {
             loadContext.ProcessId = SYSTEM_PROCESS_ID;
             PhEnumGenericModules(
@@ -360,12 +354,12 @@ NTSTATUS PhpThreadProviderLoadSymbols(
                 PPH_STRING fileName;
                 PPH_STRING newFileName;
 
-                fileName = PhCreateStringFromAnsi(kernelModules->Modules[0].FullPathName);
+                fileName = PhConvertMultiByteToUtf16(kernelModules->Modules[0].FullPathName);
                 newFileName = PhGetFileName(fileName);
                 PhDereferenceObject(fileName);
 
                 PhLoadModuleSymbolProvider(
-                    threadProvider->SymbolProvider,
+                    ThreadProvider->SymbolProvider,
                     newFileName->Buffer,
                     (ULONG64)kernelModules->Modules[0].ImageBase,
                     kernelModules->Modules[0].ImageSize
@@ -377,24 +371,8 @@ NTSTATUS PhpThreadProviderLoadSymbols(
         }
     }
 
-    // Check if the process has services - we'll need to know before getting service tag/name
-    // information.
-    if (WINDOWS_HAS_SERVICE_TAGS)
-    {
-        PPH_PROCESS_ITEM processItem;
-
-        if (processItem = PhReferenceProcessItem(threadProvider->ProcessId))
-        {
-            threadProvider->HasServices = processItem->ServiceList && processItem->ServiceList->Count != 0;
-            PhDereferenceObject(processItem);
-        }
-    }
-
-    PhSetEvent(&threadProvider->SymbolsLoadedEvent);
-
-    PhDereferenceObject(threadProvider);
-
-    return STATUS_SUCCESS;
+    ThreadProvider->SymbolsLoadedRunId = runId;
+    PhReleaseQueuedLockExclusive(&ThreadProvider->LoadSymbolsLock);
 }
 
 PPH_THREAD_ITEM PhCreateThreadItem(
@@ -403,17 +381,13 @@ PPH_THREAD_ITEM PhCreateThreadItem(
 {
     PPH_THREAD_ITEM threadItem;
 
-    if (!NT_SUCCESS(PhCreateObject(
-        &threadItem,
+    threadItem = PhCreateObject(
         PhEmGetObjectSize(EmThreadItemType, sizeof(PH_THREAD_ITEM)),
-        0,
         PhThreadItemType
-        )))
-        return NULL;
-
+        );
     memset(threadItem, 0, sizeof(PH_THREAD_ITEM));
     threadItem->ThreadId = ThreadId;
-    PhPrintUInt32(threadItem->ThreadIdString, (ULONG)ThreadId);
+    PhPrintUInt32(threadItem->ThreadIdString, HandleToUlong(ThreadId));
 
     PhEmCallObjectOperation(EmThreadItemType, threadItem, EmObjectCreate);
 
@@ -449,7 +423,7 @@ ULONG PhpThreadHashtableHashFunction(
     _In_ PVOID Entry
     )
 {
-    return (ULONG)(*(PPH_THREAD_ITEM *)Entry)->ThreadId / 4;
+    return HandleToUlong((*(PPH_THREAD_ITEM *)Entry)->ThreadId) / 4;
 }
 
 PPH_THREAD_ITEM PhReferenceThreadItem(
@@ -495,7 +469,7 @@ VOID PhDereferenceAllThreadItems(
 
     PhAcquireFastLockExclusive(&ThreadProvider->ThreadHashtableLock);
 
-    while (PhEnumHashtable(ThreadProvider->ThreadHashtable, (PPVOID)&threadItem, &enumerationKey))
+    while (PhEnumHashtable(ThreadProvider->ThreadHashtable, (PVOID *)&threadItem, &enumerationKey))
     {
         PhDereferenceObject(*threadItem);
     }
@@ -519,14 +493,16 @@ NTSTATUS PhpThreadQueryWorker(
     PPH_THREAD_QUERY_DATA data = (PPH_THREAD_QUERY_DATA)Parameter;
     LONG newSymbolsLoading;
 
+    if (data->ThreadProvider->Terminating)
+        goto Done;
+
     newSymbolsLoading = _InterlockedIncrement(&data->ThreadProvider->SymbolsLoading);
 
     if (newSymbolsLoading == 1)
         PhInvokeCallback(&data->ThreadProvider->LoadingStateChangedEvent, (PVOID)TRUE);
 
-    // We can't resolve the start address until symbols have
-    // been loaded.
-    PhWaitForEvent(&data->ThreadProvider->SymbolsLoadedEvent, NULL);
+    if (data->ThreadProvider->SymbolsLoadedRunId == 0)
+        PhLoadSymbolsThreadProvider(data->ThreadProvider);
 
     data->StartAddressString = PhGetSymbolFromAddress(
         data->ThreadProvider->SymbolProvider,
@@ -537,17 +513,48 @@ NTSTATUS PhpThreadQueryWorker(
         NULL
         );
 
+    if (data->StartAddressResolveLevel == PhsrlAddress && data->ThreadProvider->SymbolsLoadedRunId < data->RunId)
+    {
+        // The process may have loaded new modules, so load symbols for those and try again.
+
+        PhLoadSymbolsThreadProvider(data->ThreadProvider);
+
+        PhClearReference(&data->StartAddressString);
+        PhClearReference(&data->ThreadItem->StartAddressFileName);
+        data->StartAddressString = PhGetSymbolFromAddress(
+            data->ThreadProvider->SymbolProvider,
+            data->ThreadItem->StartAddress,
+            &data->StartAddressResolveLevel,
+            &data->ThreadItem->StartAddressFileName,
+            NULL,
+            NULL
+            );
+    }
+
     newSymbolsLoading = _InterlockedDecrement(&data->ThreadProvider->SymbolsLoading);
 
     if (newSymbolsLoading == 0)
         PhInvokeCallback(&data->ThreadProvider->LoadingStateChangedEvent, (PVOID)FALSE);
 
+    // Check if the process has services - we'll need to know before getting service tag/name
+    // information.
+    if (WINDOWS_HAS_SERVICE_TAGS && !data->ThreadProvider->HasServicesKnown)
+    {
+        PPH_PROCESS_ITEM processItem;
+
+        if (processItem = PhReferenceProcessItem(data->ThreadProvider->ProcessId))
+        {
+            data->ThreadProvider->HasServices = processItem->ServiceList && processItem->ServiceList->Count != 0;
+            PhDereferenceObject(processItem);
+        }
+
+        data->ThreadProvider->HasServicesKnown = TRUE;
+    }
+
     // Get the service tag, and the service name.
-    if (
-        WINDOWS_HAS_SERVICE_TAGS &&
+    if (WINDOWS_HAS_SERVICE_TAGS &&
         data->ThreadProvider->SymbolProvider->IsRealHandle &&
-        data->ThreadItem->ThreadHandle
-        )
+        data->ThreadItem->ThreadHandle)
     {
         PVOID serviceTag;
 
@@ -564,8 +571,8 @@ NTSTATUS PhpThreadQueryWorker(
         }
     }
 
+Done:
     RtlInterlockedPushEntrySList(&data->ThreadProvider->QueryListHead, &data->ListEntry);
-
     PhDereferenceObject(data->ThreadProvider);
 
     return STATUS_SUCCESS;
@@ -580,11 +587,10 @@ VOID PhpQueueThreadQuery(
 
     data = PhAllocate(sizeof(PH_THREAD_QUERY_DATA));
     memset(data, 0, sizeof(PH_THREAD_QUERY_DATA));
-    data->ThreadProvider = ThreadProvider;
-    data->ThreadItem = ThreadItem;
+    PhSetReference(&data->ThreadProvider, ThreadProvider);
+    PhSetReference(&data->ThreadItem, ThreadItem);
+    data->RunId = ThreadProvider->RunId;
 
-    PhReferenceObject(ThreadProvider);
-    PhReferenceObject(ThreadItem);
     PhpQueueThreadWorkQueueItem(PhpThreadQueryWorker, data);
 }
 
@@ -647,9 +653,9 @@ static NTSTATUS PhpGetThreadCycleTime(
     }
     else
     {
-        if ((ULONG)ThreadItem->ThreadId < (ULONG)PhSystemBasicInformation.NumberOfProcessors)
+        if (HandleToUlong(ThreadItem->ThreadId) < (ULONG)PhSystemBasicInformation.NumberOfProcessors)
         {
-            *CycleTime = PhCpuIdleCycleTime[(ULONG)ThreadItem->ThreadId].QuadPart;
+            *CycleTime = PhCpuIdleCycleTime[HandleToUlong(ThreadItem->ThreadId)].QuadPart;
             return STATUS_SUCCESS;
         }
     }
@@ -740,7 +746,7 @@ VOID PhpThreadProviderUpdate(
     {
         for (i = 0; i < numberOfThreads; i++)
         {
-            threads[i].ClientId.UniqueThread = (HANDLE)i;
+            threads[i].ClientId.UniqueThread = UlongToHandle(i);
         }
     }
 
@@ -750,7 +756,7 @@ VOID PhpThreadProviderUpdate(
         ULONG enumerationKey = 0;
         PPH_THREAD_ITEM *threadItem;
 
-        while (PhEnumHashtable(threadProvider->ThreadHashtable, (PPVOID)&threadItem, &enumerationKey))
+        while (PhEnumHashtable(threadProvider->ThreadHashtable, (PVOID *)&threadItem, &enumerationKey))
         {
             BOOLEAN found = FALSE;
 
@@ -813,7 +819,7 @@ VOID PhpThreadProviderUpdate(
                 data->ThreadItem->StartAddressResolveLevel = data->StartAddressResolveLevel;
             }
 
-            PhSwapReference2(&data->ThreadItem->ServiceName, data->ServiceName);
+            PhMoveReference(&data->ThreadItem->ServiceName, data->ServiceName);
 
             data->ThreadItem->JustResolved = TRUE;
 
@@ -901,7 +907,7 @@ VOID PhpThreadProviderUpdate(
             // Get the Win32 priority.
             threadItem->PriorityWin32 = GetThreadPriority(threadItem->ThreadHandle);
 
-            if (PhTestEvent(&threadProvider->SymbolsLoadedEvent))
+            if (threadProvider->SymbolsLoadedRunId != 0)
             {
                 threadItem->StartAddressString = PhpGetThreadBasicStartAddress(
                     threadProvider,
@@ -944,7 +950,7 @@ VOID PhpThreadProviderUpdate(
             {
                 GUITHREADINFO info = { sizeof(GUITHREADINFO) };
 
-                threadItem->IsGuiThread = !!GetGUIThreadInfo((ULONG)threadItem->ThreadId, &info);
+                threadItem->IsGuiThread = !!GetGUIThreadInfo(HandleToUlong(threadItem->ThreadId), &info);
             }
 
             // Add the thread item to the hashtable.
@@ -981,7 +987,7 @@ VOID PhpThreadProviderUpdate(
             // tried to get the start address. Try again.
             if (threadItem->StartAddressResolveLevel == PhsrlAddress)
             {
-                if (PhTestEvent(&threadProvider->SymbolsLoadedEvent))
+                if (threadProvider->SymbolsLoadedRunId != 0)
                 {
                     PPH_STRING newStartAddressString;
 
@@ -991,7 +997,7 @@ VOID PhpThreadProviderUpdate(
                         &threadItem->StartAddressResolveLevel
                         );
 
-                    PhSwapReference2(
+                    PhMoveReference(
                         &threadItem->StartAddressString,
                         newStartAddressString
                         );
@@ -1006,10 +1012,8 @@ VOID PhpThreadProviderUpdate(
             // Note that we check the resolve level again
             // because we may have changed it in the previous
             // block.
-            if (
-                threadItem->JustResolved &&
-                threadItem->StartAddressResolveLevel == PhsrlAddress
-                )
+            if (threadItem->JustResolved &&
+                threadItem->StartAddressResolveLevel == PhsrlAddress)
             {
                 if (threadItem->StartAddress != (ULONG64)thread->StartAddress)
                 {
@@ -1109,7 +1113,7 @@ VOID PhpThreadProviderUpdate(
                 GUITHREADINFO info = { sizeof(GUITHREADINFO) };
                 BOOLEAN oldIsGuiThread = threadItem->IsGuiThread;
 
-                threadItem->IsGuiThread = !!GetGUIThreadInfo((ULONG)threadItem->ThreadId, &info);
+                threadItem->IsGuiThread = !!GetGUIThreadInfo(HandleToUlong(threadItem->ThreadId), &info);
 
                 if (threadItem->IsGuiThread != oldIsGuiThread)
                     modified = TRUE;

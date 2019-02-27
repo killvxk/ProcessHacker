@@ -2,7 +2,7 @@
  * Process Hacker -
  *   system information window
  *
- * Copyright (C) 2011-2013 wj32
+ * Copyright (C) 2011-2016 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -57,11 +57,14 @@
 
 #include <phapp.h>
 #include <kphuser.h>
+#include <symprv.h>
 #include <settings.h>
+#include <sysinfo.h>
 #include <phplug.h>
 #include <windowsx.h>
 #include <uxtheme.h>
 #include <vssym32.h>
+#include <math.h>
 #include <sysinfop.h>
 
 static HANDLE PhSipThread = NULL;
@@ -129,6 +132,7 @@ static PH_UINT32_DELTA MappedWritesDelta;
 static BOOLEAN MmAddressesInitialized;
 static PSIZE_T MmSizeOfPagedPoolInBytes;
 static PSIZE_T MmMaximumNonPagedPoolInBytes;
+static ULONGLONG InstalledMemory;
 
 static PPH_SYSINFO_SECTION IoSection;
 static HWND IoDialog;
@@ -354,7 +358,7 @@ VOID PhSipOnInitDialog(
         );
 
     if (!EnableThemeDialogTexture_I)
-        EnableThemeDialogTexture_I = PhGetProcAddress(L"uxtheme.dll", "EnableThemeDialogTexture");
+        EnableThemeDialogTexture_I = PhGetModuleProcAddress(L"uxtheme.dll", "EnableThemeDialogTexture");
 
     PhSetControlTheme(PhSipWindow, L"explorer");
     PhSipUpdateThemeData();
@@ -510,8 +514,7 @@ VOID PhSipOnShowWindow(
 
     sectionName = PhGetStringSetting(L"SysInfoWindowSection");
 
-    if (sectionName->Length != 0 &&
-        (section = PhSipFindSection(&sectionName->sr)))
+    if (sectionName->Length != 0 && (section = PhSipFindSection(&sectionName->sr)))
     {
         PhSipEnterSectionView(section);
     }
@@ -1018,7 +1021,7 @@ PPH_SYSINFO_SECTION PhSipCreateSection(
         3,
         3,
         PhSipWindow,
-        (HMENU)(IDDYNAMIC + SectionList->Count * 2 + 1),
+        NULL,
         PhInstanceHandle,
         NULL
         );
@@ -1042,7 +1045,7 @@ PPH_SYSINFO_SECTION PhSipCreateSection(
         3,
         3,
         PhSipWindow,
-        (HMENU)section->PanelId,
+        (HMENU)(ULONG_PTR)section->PanelId,
         PhInstanceHandle,
         NULL
         );
@@ -1180,9 +1183,9 @@ VOID PhSipDrawPanel(
         PhSipDefaultDrawPanel(Section, &sysInfoDrawPanel);
     }
 
-    PhSwapReference(&sysInfoDrawPanel.Title, NULL);
-    PhSwapReference(&sysInfoDrawPanel.SubTitle, NULL);
-    PhSwapReference(&sysInfoDrawPanel.SubTitleOverflow, NULL);
+    PhClearReference(&sysInfoDrawPanel.Title);
+    PhClearReference(&sysInfoDrawPanel.SubTitle);
+    PhClearReference(&sysInfoDrawPanel.SubTitleOverflow);
 }
 
 VOID PhSipDefaultDrawPanel(
@@ -1562,58 +1565,6 @@ VOID PhSipRestoreSummaryView(
     PhSipLayoutSummaryView();
 }
 
-HWND PhSipDefaultCreateDialog(
-    _In_ PVOID Instance,
-    _In_ PWSTR Template,
-    _In_ DLGPROC DialogProc,
-    _In_ PVOID Parameter
-    )
-{
-    HRSRC resourceInfo;
-    ULONG resourceSize;
-    HGLOBAL resourceHandle;
-    PDLGTEMPLATEEX dialog;
-    PDLGTEMPLATEEX dialogCopy;
-    HWND dialogHandle;
-
-    resourceInfo = FindResource(Instance, Template, MAKEINTRESOURCE(RT_DIALOG));
-
-    if (!resourceInfo)
-        return NULL;
-
-    resourceSize = SizeofResource(Instance, resourceInfo);
-
-    if (resourceSize == 0)
-        return NULL;
-
-    resourceHandle = LoadResource(Instance, resourceInfo);
-
-    if (!resourceHandle)
-        return NULL;
-
-    dialog = LockResource(resourceHandle);
-
-    if (!dialog)
-        return NULL;
-
-    dialogCopy = PhAllocateCopy(dialog, resourceSize);
-
-    if (dialogCopy->signature == 0xffff)
-    {
-        dialogCopy->style = DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD;
-    }
-    else
-    {
-        ((DLGTEMPLATE *)dialogCopy)->style = DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD;
-    }
-
-    dialogHandle = CreateDialogIndirectParam(Instance, (DLGTEMPLATE *)dialogCopy, ContainerControl, DialogProc, (LPARAM)Parameter);
-
-    PhFree(dialogCopy);
-
-    return dialogHandle;
-}
-
 VOID PhSipCreateSectionDialog(
     _In_ PPH_SYSINFO_SECTION Section
     )
@@ -1626,7 +1577,14 @@ VOID PhSipCreateSectionDialog(
     {
         if (!createDialog.CustomCreate)
         {
-            Section->DialogHandle = PhSipDefaultCreateDialog(createDialog.Instance, createDialog.Template, createDialog.DialogProc, createDialog.Parameter);
+            Section->DialogHandle = PhCreateDialogFromTemplate(
+                ContainerControl,
+                DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD,
+                createDialog.Instance,
+                createDialog.Template,
+                createDialog.DialogProc,
+                createDialog.Parameter
+                );
         }
     }
 }
@@ -1987,7 +1945,7 @@ PPH_STRING PhSipFormatSizeWithPrecision(
     format.Precision = Precision;
     format.u.Size = Size;
 
-    return PHA_DEREFERENCE(PhFormat(&format, 1, 0));
+    return PhAutoDereferenceObject(PhFormat(&format, 1, 0));
 }
 
 BOOLEAN PhSipCpuSectionCallback(
@@ -2050,11 +2008,11 @@ BOOLEAN PhSipCpuSectionCallback(
             cpuKernel = PhGetItemCircularBuffer_FLOAT(&PhCpuKernelHistory, getTooltipText->Index);
             cpuUser = PhGetItemCircularBuffer_FLOAT(&PhCpuUserHistory, getTooltipText->Index);
 
-            PhSwapReference2(&Section->GraphState.TooltipText, PhFormatString(
+            PhMoveReference(&Section->GraphState.TooltipText, PhFormatString(
                 L"%.2f%%%s\n%s",
                 (cpuKernel + cpuUser) * 100,
                 PhGetStringOrEmpty(PhSipGetMaxCpuString(getTooltipText->Index)),
-                ((PPH_STRING)PHA_DEREFERENCE(PhGetStatisticsTimeString(NULL, getTooltipText->Index)))->Buffer
+                ((PPH_STRING)PhAutoDereferenceObject(PhGetStatisticsTimeString(NULL, getTooltipText->Index)))->Buffer
                 ));
             getTooltipText->Text = Section->GraphState.TooltipText->sr;
         }
@@ -2333,7 +2291,7 @@ VOID PhSipCreateCpuGraphs(
         3,
         3,
         CpuDialog,
-        (HMENU)IDC_CPU,
+        NULL,
         PhInstanceHandle,
         NULL
         );
@@ -2350,7 +2308,7 @@ VOID PhSipCreateCpuGraphs(
             3,
             3,
             CpuDialog,
-            (HMENU)(IDC_CPU0 + i),
+            NULL,
             PhInstanceHandle,
             NULL
             );
@@ -2383,33 +2341,69 @@ VOID PhSipLayoutCpuGraphs(
     }
     else
     {
-        ULONG i;
-        ULONG graphWidth;
-        ULONG x;
+        ULONG numberOfRows = 1;
+        ULONG numberOfColumns = NumberOfProcessors;
 
-        graphWidth = (clientRect.right - CpuGraphMargin.left - CpuGraphMargin.right - PH_SYSINFO_CPU_PADDING * (NumberOfProcessors - 1)) / NumberOfProcessors;
-        x = CpuGraphMargin.left;
-
-        for (i = 0; i < NumberOfProcessors; i++)
+        for (ULONG rows = 2; rows <= NumberOfProcessors / rows; rows++)
         {
-            // Give the last graph the remaining space; the width we calculated might be off by a few
+            if (NumberOfProcessors % rows != 0)
+                continue;
+
+            numberOfRows = rows;
+            numberOfColumns = NumberOfProcessors / rows;
+        }
+
+        if (numberOfRows == 1)
+        {
+            numberOfRows = (ULONG)sqrt(NumberOfProcessors);
+            numberOfColumns = (NumberOfProcessors + numberOfRows - 1) / numberOfRows;
+        }
+
+        ULONG numberOfYPaddings = numberOfRows - 1;
+        ULONG numberOfXPaddings = numberOfColumns - 1;
+
+        ULONG cellHeight = (clientRect.bottom - CpuGraphMargin.top - CpuGraphMargin.bottom - PH_SYSINFO_CPU_PADDING * numberOfYPaddings) / numberOfRows;
+        ULONG y = CpuGraphMargin.top;
+        ULONG cellWidth;
+        ULONG x;
+        ULONG i = 0;
+
+        for (ULONG row = 0; row < numberOfRows; row++)
+        {
+            // Give the last row the remaining space; the height we calculated might be off by a few
             // pixels due to integer division.
-            if (i == NumberOfProcessors - 1)
+            if (row == numberOfRows - 1)
+                cellHeight = clientRect.bottom - CpuGraphMargin.bottom - y;
+
+            cellWidth = (clientRect.right - CpuGraphMargin.left - CpuGraphMargin.right - PH_SYSINFO_CPU_PADDING * numberOfXPaddings) / numberOfColumns;
+            x = CpuGraphMargin.left;
+
+            for (ULONG column = 0; column < numberOfColumns; column++)
             {
-                graphWidth = clientRect.right - CpuGraphMargin.right - x;
+                // Give the last cell the remaining space; the width we calculated might be off by a few
+                // pixels due to integer division.
+                if (column == numberOfColumns - 1)
+                    cellWidth = clientRect.right - CpuGraphMargin.right - x;
+
+                if (i < NumberOfProcessors)
+                {
+                    deferHandle = DeferWindowPos(
+                        deferHandle,
+                        CpusGraphHandle[i],
+                        NULL,
+                        x,
+                        y,
+                        cellWidth,
+                        cellHeight,
+                        SWP_NOACTIVATE | SWP_NOZORDER
+                        );
+                    i++;
+                }
+
+                x += cellWidth + PH_SYSINFO_CPU_PADDING;
             }
 
-            deferHandle = DeferWindowPos(
-                deferHandle,
-                CpusGraphHandle[i],
-                NULL,
-                x,
-                CpuGraphMargin.top,
-                graphWidth,
-                clientRect.bottom - CpuGraphMargin.top - CpuGraphMargin.bottom,
-                SWP_NOACTIVATE | SWP_NOZORDER
-                );
-            x += graphWidth + PH_SYSINFO_CPU_PADDING;
+            y += cellHeight + PH_SYSINFO_CPU_PADDING;
         }
     }
 
@@ -2493,11 +2487,11 @@ VOID PhSipNotifyCpuGraph(
                         cpuKernel = PhGetItemCircularBuffer_FLOAT(&PhCpuKernelHistory, getTooltipText->Index);
                         cpuUser = PhGetItemCircularBuffer_FLOAT(&PhCpuUserHistory, getTooltipText->Index);
 
-                        PhSwapReference2(&CpuGraphState.TooltipText, PhFormatString(
+                        PhMoveReference(&CpuGraphState.TooltipText, PhFormatString(
                             L"%.2f%%%s\n%s",
                             (cpuKernel + cpuUser) * 100,
                             PhGetStringOrEmpty(PhSipGetMaxCpuString(getTooltipText->Index)),
-                            ((PPH_STRING)PHA_DEREFERENCE(PhGetStatisticsTimeString(NULL, getTooltipText->Index)))->Buffer
+                            ((PPH_STRING)PhAutoDereferenceObject(PhGetStatisticsTimeString(NULL, getTooltipText->Index)))->Buffer
                             ));
                     }
 
@@ -2513,13 +2507,13 @@ VOID PhSipNotifyCpuGraph(
                         cpuKernel = PhGetItemCircularBuffer_FLOAT(&PhCpusKernelHistory[Index], getTooltipText->Index);
                         cpuUser = PhGetItemCircularBuffer_FLOAT(&PhCpusUserHistory[Index], getTooltipText->Index);
 
-                        PhSwapReference2(&CpusGraphState[Index].TooltipText, PhFormatString(
+                        PhMoveReference(&CpusGraphState[Index].TooltipText, PhFormatString(
                             L"%.2f%% (K: %.2f%%, U: %.2f%%)%s\n%s",
                             (cpuKernel + cpuUser) * 100,
                             cpuKernel * 100,
                             cpuUser * 100,
                             PhGetStringOrEmpty(PhSipGetMaxCpuString(getTooltipText->Index)),
-                            ((PPH_STRING)PHA_DEREFERENCE(PhGetStatisticsTimeString(NULL, getTooltipText->Index)))->Buffer
+                            ((PPH_STRING)PhAutoDereferenceObject(PhGetStatisticsTimeString(NULL, getTooltipText->Index)))->Buffer
                             ));
                     }
 
@@ -2670,7 +2664,7 @@ PPH_PROCESS_RECORD PhSipReferenceMaxCpuRecord(
     PhGetStatisticsTime(NULL, Index, &time);
     time.QuadPart += PH_TICKS_PER_SEC - 1;
 
-    return PhFindProcessRecord(LongToHandle(maxProcessId), &time);
+    return PhFindProcessRecord(UlongToHandle(maxProcessId), &time);
 }
 
 PPH_STRING PhSipGetMaxCpuString(
@@ -2695,7 +2689,7 @@ PPH_STRING PhSipGetMaxCpuString(
             maxUsageString = PhaFormatString(
                 L"\n%s (%u): %.2f%%",
                 maxProcessRecord->ProcessName->Buffer,
-                (ULONG)maxProcessRecord->ProcessId,
+                HandleToUlong(maxProcessRecord->ProcessId),
                 maxCpuUsage * 100
                 );
         }
@@ -2727,7 +2721,7 @@ VOID PhSipGetCpuBrandString(
     __cpuid(&brandString[4], 0x80000003);
     __cpuid(&brandString[8], 0x80000004);
 
-    PhZeroExtendToUnicode((PSTR)brandString, 48, BrandString);
+    PhZeroExtendToUtf16Buffer((PSTR)brandString, 48, BrandString);
     BrandString[48] = 0;
 }
 
@@ -2766,7 +2760,7 @@ BOOLEAN PhSipGetCpuFrequencyFromDistribution(
 
         for (j = 0; j < stateDistribution->StateCount; j++)
         {
-            if (WindowsVersion >= WINDOWS_81)
+            if (WindowsVersion >= WINDOWS_8_1)
             {
                 stateDifference->States[j] = stateDistribution->States[j];
             }
@@ -2792,7 +2786,7 @@ BOOLEAN PhSipGetCpuFrequencyFromDistribution(
 
         for (j = 0; j < stateDistribution->StateCount; j++)
         {
-            if (WindowsVersion >= WINDOWS_81)
+            if (WindowsVersion >= WINDOWS_8_1)
             {
                 stateDifference->States[j].Hits.QuadPart -= stateDistribution->States[j].Hits.QuadPart;
             }
@@ -2930,7 +2924,7 @@ BOOLEAN PhSipMemorySectionCallback(
                     if (PhPerfInformation.CommitLimit != 0)
                     {
                         // Scale the data.
-                        PhxfDivideSingle2U(
+                        PhDivideSinglesBySingle(
                             Section->GraphState.Data1,
                             (FLOAT)PhPerfInformation.CommitLimit,
                             drawInfo->LineDataCount
@@ -2956,7 +2950,7 @@ BOOLEAN PhSipMemorySectionCallback(
                     if (PhSystemBasicInformation.NumberOfPhysicalPages != 0)
                     {
                         // Scale the data.
-                        PhxfDivideSingle2U(
+                        PhDivideSinglesBySingle(
                             Section->GraphState.Data1,
                             (FLOAT)PhSystemBasicInformation.NumberOfPhysicalPages,
                             drawInfo->LineDataCount
@@ -2977,10 +2971,10 @@ BOOLEAN PhSipMemorySectionCallback(
             {
                 usedPages = PhGetItemCircularBuffer_ULONG(&PhCommitHistory, getTooltipText->Index);
 
-                PhSwapReference2(&Section->GraphState.TooltipText, PhFormatString(
+                PhMoveReference(&Section->GraphState.TooltipText, PhFormatString(
                     L"Commit Charge: %s\n%s",
                     PhaFormatSize(UInt32x32To64(usedPages, PAGE_SIZE), -1)->Buffer,
-                    ((PPH_STRING)PHA_DEREFERENCE(PhGetStatisticsTimeString(NULL, getTooltipText->Index)))->Buffer
+                    ((PPH_STRING)PhAutoDereferenceObject(PhGetStatisticsTimeString(NULL, getTooltipText->Index)))->Buffer
                     ));
                 getTooltipText->Text = Section->GraphState.TooltipText->sr;
             }
@@ -2988,10 +2982,10 @@ BOOLEAN PhSipMemorySectionCallback(
             {
                 usedPages = PhGetItemCircularBuffer_ULONG(&PhPhysicalHistory, getTooltipText->Index);
 
-                PhSwapReference2(&Section->GraphState.TooltipText, PhFormatString(
+                PhMoveReference(&Section->GraphState.TooltipText, PhFormatString(
                     L"Physical Memory: %s\n%s",
                     PhaFormatSize(UInt32x32To64(usedPages, PAGE_SIZE), -1)->Buffer,
-                    ((PPH_STRING)PHA_DEREFERENCE(PhGetStatisticsTimeString(NULL, getTooltipText->Index)))->Buffer
+                    ((PPH_STRING)PhAutoDereferenceObject(PhGetStatisticsTimeString(NULL, getTooltipText->Index)))->Buffer
                     ));
                 getTooltipText->Text = Section->GraphState.TooltipText->sr;
             }
@@ -3103,7 +3097,6 @@ INT_PTR CALLBACK PhSipMemoryDialogProc(
 
             PPH_LAYOUT_ITEM graphItem;
             PPH_LAYOUT_ITEM panelItem;
-            ULONGLONG installedMemory;
 
             PhSipInitializeMemoryDialog();
 
@@ -3118,12 +3111,14 @@ INT_PTR CALLBACK PhSipMemoryDialogProc(
             SendMessage(GetDlgItem(hwndDlg, IDC_TOTALPHYSICAL), WM_SETFONT, (WPARAM)CurrentParameters.MediumFont, FALSE);
 
             if (!getPhysicallyInstalledSystemMemory)
-                getPhysicallyInstalledSystemMemory = PhGetProcAddress(L"kernel32.dll", "GetPhysicallyInstalledSystemMemory");
+                getPhysicallyInstalledSystemMemory = PhGetModuleProcAddress(L"kernel32.dll", "GetPhysicallyInstalledSystemMemory");
 
-            if (getPhysicallyInstalledSystemMemory && getPhysicallyInstalledSystemMemory(&installedMemory))
+            InstalledMemory = 0;
+
+            if (getPhysicallyInstalledSystemMemory && getPhysicallyInstalledSystemMemory(&InstalledMemory))
             {
                 SetDlgItemText(hwndDlg, IDC_TOTALPHYSICAL,
-                    PhaConcatStrings2(PhaFormatSize(installedMemory * 1024, -1)->Buffer, L" installed")->Buffer);
+                    PhaConcatStrings2(PhaFormatSize(InstalledMemory * 1024, -1)->Buffer, L" installed")->Buffer);
             }
             else
             {
@@ -3335,7 +3330,7 @@ VOID PhSipNotifyCommitGraph(
                 if (PhPerfInformation.CommitLimit != 0)
                 {
                     // Scale the data.
-                    PhxfDivideSingle2U(
+                    PhDivideSinglesBySingle(
                         CommitGraphState.Data1,
                         (FLOAT)PhPerfInformation.CommitLimit,
                         drawInfo->LineDataCount
@@ -3358,10 +3353,10 @@ VOID PhSipNotifyCommitGraph(
 
                     usedPages = PhGetItemCircularBuffer_ULONG(&PhCommitHistory, getTooltipText->Index);
 
-                    PhSwapReference2(&CommitGraphState.TooltipText, PhFormatString(
+                    PhMoveReference(&CommitGraphState.TooltipText, PhFormatString(
                         L"Commit Charge: %s\n%s",
                         PhaFormatSize(UInt32x32To64(usedPages, PAGE_SIZE), -1)->Buffer,
-                        ((PPH_STRING)PHA_DEREFERENCE(PhGetStatisticsTimeString(NULL, getTooltipText->Index)))->Buffer
+                        ((PPH_STRING)PhAutoDereferenceObject(PhGetStatisticsTimeString(NULL, getTooltipText->Index)))->Buffer
                         ));
                 }
 
@@ -3403,7 +3398,7 @@ VOID PhSipNotifyPhysicalGraph(
                 if (PhSystemBasicInformation.NumberOfPhysicalPages != 0)
                 {
                     // Scale the data.
-                    PhxfDivideSingle2U(
+                    PhDivideSinglesBySingle(
                         PhysicalGraphState.Data1,
                         (FLOAT)PhSystemBasicInformation.NumberOfPhysicalPages,
                         drawInfo->LineDataCount
@@ -3426,10 +3421,10 @@ VOID PhSipNotifyPhysicalGraph(
 
                     usedPages = PhGetItemCircularBuffer_ULONG(&PhPhysicalHistory, getTooltipText->Index);
 
-                    PhSwapReference2(&PhysicalGraphState.TooltipText, PhFormatString(
+                    PhMoveReference(&PhysicalGraphState.TooltipText, PhFormatString(
                         L"Physical Memory: %s\n%s",
                         PhaFormatSize(UInt32x32To64(usedPages, PAGE_SIZE), -1)->Buffer,
-                        ((PPH_STRING)PHA_DEREFERENCE(PhGetStatisticsTimeString(NULL, getTooltipText->Index)))->Buffer
+                        ((PPH_STRING)PhAutoDereferenceObject(PhGetStatisticsTimeString(NULL, getTooltipText->Index)))->Buffer
                         ));
                 }
 
@@ -3482,6 +3477,17 @@ VOID PhSipUpdateMemoryPanel(
         PhaFormatSize(UInt32x32To64(PhSystemBasicInformation.NumberOfPhysicalPages - PhPerfInformation.AvailablePages, PAGE_SIZE), -1)->Buffer);
     SetDlgItemText(MemoryPanel, IDC_ZPHYSICALTOTAL_V,
         PhaFormatSize(UInt32x32To64(PhSystemBasicInformation.NumberOfPhysicalPages, PAGE_SIZE), -1)->Buffer);
+
+    if (InstalledMemory != 0)
+    {
+        SetDlgItemText(MemoryPanel, IDC_ZPHYSICALRESERVED_V, 
+            PhaFormatSize(InstalledMemory * 1024 - UInt32x32To64(PhSystemBasicInformation.NumberOfPhysicalPages, PAGE_SIZE), -1)->Buffer);
+    }
+    else
+    {
+        SetDlgItemText(MemoryPanel, IDC_ZPHYSICALRESERVED_V, L"-");
+    }
+
     SetDlgItemText(MemoryPanel, IDC_ZPHYSICALCACHEWS_V,
         PhaFormatSize(UInt32x32To64(PhPerfInformation.ResidentSystemCachePage, PAGE_SIZE), -1)->Buffer);
     SetDlgItemText(MemoryPanel, IDC_ZPHYSICALKERNELWS_V,
@@ -3649,7 +3655,7 @@ NTSTATUS PhSipLoadMmAddresses(
             symbolProvider = PhCreateSymbolProvider(NULL);
             PhLoadSymbolProviderOptions(symbolProvider);
 
-            kernelFileName = PhCreateStringFromAnsi(kernelModules->Modules[0].FullPathName);
+            kernelFileName = PhConvertMultiByteToUtf16(kernelModules->Modules[0].FullPathName);
             newFileName = PhGetFileName(kernelFileName);
             PhDereferenceObject(kernelFileName);
 
@@ -3792,12 +3798,12 @@ BOOLEAN PhSipIoSectionCallback(
 
                 // Scale the data.
 
-                PhxfDivideSingle2U(
+                PhDivideSinglesBySingle(
                     Section->GraphState.Data1,
                     max,
                     drawInfo->LineDataCount
                     );
-                PhxfDivideSingle2U(
+                PhDivideSinglesBySingle(
                     Section->GraphState.Data2,
                     max,
                     drawInfo->LineDataCount
@@ -3818,13 +3824,13 @@ BOOLEAN PhSipIoSectionCallback(
             ioWrite = PhGetItemCircularBuffer_ULONG64(&PhIoWriteHistory, getTooltipText->Index);
             ioOther = PhGetItemCircularBuffer_ULONG64(&PhIoOtherHistory, getTooltipText->Index);
 
-            PhSwapReference2(&Section->GraphState.TooltipText, PhFormatString(
+            PhMoveReference(&Section->GraphState.TooltipText, PhFormatString(
                 L"R: %s\nW: %s\nO: %s%s\n%s",
                 PhaFormatSize(ioRead, -1)->Buffer,
                 PhaFormatSize(ioWrite, -1)->Buffer,
                 PhaFormatSize(ioOther, -1)->Buffer,
                 PhGetStringOrEmpty(PhSipGetMaxIoString(getTooltipText->Index)),
-                ((PPH_STRING)PHA_DEREFERENCE(PhGetStatisticsTimeString(NULL, getTooltipText->Index)))->Buffer
+                ((PPH_STRING)PhAutoDereferenceObject(PhGetStatisticsTimeString(NULL, getTooltipText->Index)))->Buffer
                 ));
             getTooltipText->Text = Section->GraphState.TooltipText->sr;
         }
@@ -4021,12 +4027,12 @@ VOID PhSipNotifyIoGraph(
 
                 // Scale the data.
 
-                PhxfDivideSingle2U(
+                PhDivideSinglesBySingle(
                     IoGraphState.Data1,
                     max,
                     drawInfo->LineDataCount
                     );
-                PhxfDivideSingle2U(
+                PhDivideSinglesBySingle(
                     IoGraphState.Data2,
                     max,
                     drawInfo->LineDataCount
@@ -4052,13 +4058,13 @@ VOID PhSipNotifyIoGraph(
                     ioWrite = PhGetItemCircularBuffer_ULONG64(&PhIoWriteHistory, getTooltipText->Index);
                     ioOther = PhGetItemCircularBuffer_ULONG64(&PhIoOtherHistory, getTooltipText->Index);
 
-                    PhSwapReference2(&IoGraphState.TooltipText, PhFormatString(
+                    PhMoveReference(&IoGraphState.TooltipText, PhFormatString(
                         L"R: %s\nW: %s\nO: %s%s\n%s",
                         PhaFormatSize(ioRead, -1)->Buffer,
                         PhaFormatSize(ioWrite, -1)->Buffer,
                         PhaFormatSize(ioOther, -1)->Buffer,
                         PhGetStringOrEmpty(PhSipGetMaxIoString(getTooltipText->Index)),
-                        ((PPH_STRING)PHA_DEREFERENCE(PhGetStatisticsTimeString(NULL, getTooltipText->Index)))->Buffer
+                        ((PPH_STRING)PhAutoDereferenceObject(PhGetStatisticsTimeString(NULL, getTooltipText->Index)))->Buffer
                         ));
                 }
 
@@ -4160,7 +4166,7 @@ PPH_PROCESS_RECORD PhSipReferenceMaxIoRecord(
     PhGetStatisticsTime(NULL, Index, &time);
     time.QuadPart += PH_TICKS_PER_SEC - 1;
 
-    return PhFindProcessRecord((HANDLE)maxProcessId, &time);
+    return PhFindProcessRecord(UlongToHandle(maxProcessId), &time);
 }
 
 PPH_STRING PhSipGetMaxIoString(
@@ -4186,7 +4192,7 @@ PPH_STRING PhSipGetMaxIoString(
             maxUsageString = PhaFormatString(
                 L"\n%s (%u): R+O: %s, W: %s",
                 maxProcessRecord->ProcessName->Buffer,
-                (ULONG)maxProcessRecord->ProcessId,
+                HandleToUlong(maxProcessRecord->ProcessId),
                 PhaFormatSize(maxIoReadOther, -1)->Buffer,
                 PhaFormatSize(maxIoWrite, -1)->Buffer
                 );

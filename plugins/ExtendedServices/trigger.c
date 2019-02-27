@@ -2,7 +2,7 @@
  * Process Hacker Extended Services -
  *   trigger editor
  *
- * Copyright (C) 2011-2013 wj32
+ * Copyright (C) 2011-2015 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -581,7 +581,7 @@ VOID EspFormatTriggerInfo(
     )
 {
     PPH_STRING stringUsed = NULL;
-    PWSTR triggerString;
+    PWSTR triggerString = NULL;
     PWSTR actionString;
     ULONG i;
     BOOLEAN typeFound;
@@ -757,12 +757,6 @@ BOOLEAN EsSaveServiceTriggerInfo(
     if (Context->InitialNumberOfTriggers == 0 && Context->InfoList->Count == 0)
         return TRUE;
 
-    if (!(serviceHandle = PhOpenService(Context->ServiceItem->Name->Buffer, SERVICE_CHANGE_CONFIG)))
-    {
-        *Win32Result = GetLastError();
-        return FALSE;
-    }
-
     PhInitializeAutoPool(&autoPool);
 
     memset(&triggerInfo, 0, sizeof(SERVICE_TRIGGER_INFO));
@@ -771,8 +765,7 @@ BOOLEAN EsSaveServiceTriggerInfo(
     // pTriggers needs to be NULL when there are no triggers.
     if (Context->InfoList->Count != 0)
     {
-        PhCreateAlloc(&triggerInfo.pTriggers, Context->InfoList->Count * sizeof(SERVICE_TRIGGER));
-        PhaDereferenceObject(triggerInfo.pTriggers);
+        triggerInfo.pTriggers = PhAutoDereferenceObject(PhCreateAlloc(Context->InfoList->Count * sizeof(SERVICE_TRIGGER)));
         memset(triggerInfo.pTriggers, 0, Context->InfoList->Count * sizeof(SERVICE_TRIGGER));
 
         for (i = 0; i < Context->InfoList->Count; i++)
@@ -787,8 +780,7 @@ BOOLEAN EsSaveServiceTriggerInfo(
             if (info->DataList && info->DataList->Count != 0)
             {
                 trigger->cDataItems = info->DataList->Count;
-                PhCreateAlloc(&trigger->pDataItems, info->DataList->Count * sizeof(SERVICE_TRIGGER_SPECIFIC_DATA_ITEM));
-                PhaDereferenceObject(trigger->pDataItems);
+                trigger->pDataItems = PhAutoDereferenceObject(PhCreateAlloc(info->DataList->Count * sizeof(SERVICE_TRIGGER_SPECIFIC_DATA_ITEM)));
 
                 for (j = 0; j < info->DataList->Count; j++)
                 {
@@ -822,15 +814,48 @@ BOOLEAN EsSaveServiceTriggerInfo(
         }
     }
 
-    if (!ChangeServiceConfig2(serviceHandle, SERVICE_CONFIG_TRIGGER_INFO, &triggerInfo))
+    if (serviceHandle = PhOpenService(Context->ServiceItem->Name->Buffer, SERVICE_CHANGE_CONFIG))
+    {
+        if (!ChangeServiceConfig2(serviceHandle, SERVICE_CONFIG_TRIGGER_INFO, &triggerInfo))
+        {
+            result = FALSE;
+            *Win32Result = GetLastError();
+        }
+
+        CloseServiceHandle(serviceHandle);
+    }
+    else
     {
         result = FALSE;
         *Win32Result = GetLastError();
+
+        if (*Win32Result == ERROR_ACCESS_DENIED && !PhElevated)
+        {
+            // Elevate using phsvc.
+            if (PhUiConnectToPhSvc(Context->WindowHandle, FALSE))
+            {
+                NTSTATUS status;
+
+                result = TRUE;
+
+                if (!NT_SUCCESS(status = PhSvcCallChangeServiceConfig2(Context->ServiceItem->Name->Buffer,
+                    SERVICE_CONFIG_TRIGGER_INFO, &triggerInfo)))
+                {
+                    result = FALSE;
+                    *Win32Result = PhNtStatusToDosError(status);
+                }
+
+                PhUiDisconnectFromPhSvc();
+            }
+            else
+            {
+                // User cancelled elevation.
+                *Win32Result = ERROR_CANCELLED;
+            }
+        }
     }
 
     PhDeleteAutoPool(&autoPool);
-
-    CloseServiceHandle(serviceHandle);
 
     return result;
 }
@@ -906,7 +931,7 @@ VOID EsHandleEventServiceTrigger(
 
             lvItemIndex = ListView_GetNextItem(Context->TriggersLv, -1, LVNI_SELECTED);
 
-            if (lvItemIndex != -1 && PhGetListViewItemParam(Context->TriggersLv, lvItemIndex, (PPVOID)&info))
+            if (lvItemIndex != -1 && PhGetListViewItemParam(Context->TriggersLv, lvItemIndex, (PVOID *)&info))
             {
                 index = PhFindItemList(Context->InfoList, info);
 
@@ -957,7 +982,7 @@ VOID EsHandleEventServiceTrigger(
 
             lvItemIndex = ListView_GetNextItem(Context->TriggersLv, -1, LVNI_SELECTED);
 
-            if (lvItemIndex != -1 && PhGetListViewItemParam(Context->TriggersLv, lvItemIndex, (PPVOID)&info))
+            if (lvItemIndex != -1 && PhGetListViewItemParam(Context->TriggersLv, lvItemIndex, (PVOID *)&info))
             {
                 index = PhFindItemList(Context->InfoList, info);
 
@@ -1100,7 +1125,7 @@ static VOID EspFixServiceTriggerControls(
         if (IsWindowEnabled(GetDlgItem(hwndDlg, IDC_SUBTYPECUSTOM)))
         {
             EnableWindow(GetDlgItem(hwndDlg, IDC_SUBTYPECUSTOM), FALSE);
-            PhSwapReference2(&Context->LastCustomSubType, PhGetWindowText(GetDlgItem(hwndDlg, IDC_SUBTYPECUSTOM)));
+            PhMoveReference(&Context->LastCustomSubType, PhGetWindowText(GetDlgItem(hwndDlg, IDC_SUBTYPECUSTOM)));
             SetDlgItemText(hwndDlg, IDC_SUBTYPECUSTOM, L"");
         }
     }
@@ -1349,7 +1374,7 @@ INT_PTR CALLBACK EspServiceTriggerDlgProc(
         break;
     case WM_DESTROY:
         {
-            PhSwapReference(&context->LastCustomSubType, NULL);
+            PhClearReference(&context->LastCustomSubType);
         }
         break;
     case WM_COMMAND:
@@ -1401,7 +1426,7 @@ INT_PTR CALLBACK EspServiceTriggerDlgProc(
                         PhDereferenceObject(text);
                     }
 
-                    PhSwapReference(&context->EditingValue, NULL);
+                    PhClearReference(&context->EditingValue);
                 }
                 break;
             case IDC_EDIT:
@@ -1415,7 +1440,7 @@ INT_PTR CALLBACK EspServiceTriggerDlgProc(
                     lvItemIndex = ListView_GetNextItem(lvHandle, -1, LVNI_SELECTED);
 
                     if (
-                        lvItemIndex != -1 && PhGetListViewItemParam(lvHandle, lvItemIndex, (PPVOID)&data) &&
+                        lvItemIndex != -1 && PhGetListViewItemParam(lvHandle, lvItemIndex, (PVOID *)&data) &&
                         data->Type == SERVICE_TRIGGER_DATA_TYPE_STRING // editing binary values is not supported
                         )
                     {
@@ -1435,14 +1460,14 @@ INT_PTR CALLBACK EspServiceTriggerDlgProc(
                             {
                                 PPH_STRING text;
 
-                                PhSwapReference2(&data->String, EspConvertNewLinesToNulls(context->EditingValue));
+                                PhMoveReference(&data->String, EspConvertNewLinesToNulls(context->EditingValue));
 
                                 EspFormatTriggerData(data, &text);
                                 PhSetListViewSubItem(lvHandle, lvItemIndex, 0, text->Buffer);
                                 PhDereferenceObject(text);
                             }
 
-                            PhSwapReference(&context->EditingValue, NULL);
+                            PhClearReference(&context->EditingValue);
                         }
                     }
                 }
@@ -1457,7 +1482,7 @@ INT_PTR CALLBACK EspServiceTriggerDlgProc(
                     lvHandle = GetDlgItem(hwndDlg, IDC_LIST);
                     lvItemIndex = ListView_GetNextItem(lvHandle, -1, LVNI_SELECTED);
 
-                    if (lvItemIndex != -1 && PhGetListViewItemParam(lvHandle, lvItemIndex, (PPVOID)&data))
+                    if (lvItemIndex != -1 && PhGetListViewItemParam(lvHandle, lvItemIndex, (PVOID *)&data))
                     {
                         index = PhFindItemList(context->EditingInfo->DataList, data);
 
@@ -1484,10 +1509,10 @@ INT_PTR CALLBACK EspServiceTriggerDlgProc(
 
                     PhInitializeAutoPool(&autoPool);
 
-                    typeString = PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_TYPE);
-                    subTypeString = PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_SUBTYPE);
-                    customSubTypeString = PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_SUBTYPECUSTOM);
-                    actionString = PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_ACTION);
+                    typeString = PhaGetDlgItemText(hwndDlg, IDC_TYPE);
+                    subTypeString = PhaGetDlgItemText(hwndDlg, IDC_SUBTYPE);
+                    customSubTypeString = PhaGetDlgItemText(hwndDlg, IDC_SUBTYPECUSTOM);
+                    actionString = PhaGetDlgItemText(hwndDlg, IDC_ACTION);
 
                     for (i = 0; i < sizeof(TypeEntries) / sizeof(TYPE_ENTRY); i++)
                     {
@@ -1587,7 +1612,7 @@ INT_PTR CALLBACK EspServiceTriggerDlgProc(
                             EspDestroyTriggerData(context->EditingInfo->DataList->Items[i]);
                         }
 
-                        PhSwapReference(&context->EditingInfo->DataList, NULL);
+                        PhClearReference(&context->EditingInfo->DataList);
                     }
 
                     EndDialog(hwndDlg, IDOK);
@@ -1674,7 +1699,7 @@ static INT_PTR CALLBACK ValueDlgProc(
     case WM_INITDIALOG:
         {
             SetDlgItemText(hwndDlg, IDC_VALUES, context->EditingValue->Buffer);
-            SetFocus(GetDlgItem(hwndDlg, IDC_VALUES));
+            SendMessage(hwndDlg, WM_NEXTDLGCTL, (WPARAM)GetDlgItem(hwndDlg, IDC_VALUES), TRUE);
             Edit_SetSel(GetDlgItem(hwndDlg, IDC_VALUES), 0, -1);
         }
         break;
@@ -1686,7 +1711,7 @@ static INT_PTR CALLBACK ValueDlgProc(
                 EndDialog(hwndDlg, IDCANCEL);
                 break;
             case IDOK:
-                PhSwapReference2(&context->EditingValue, PhGetWindowText(GetDlgItem(hwndDlg, IDC_VALUES)));
+                PhMoveReference(&context->EditingValue, PhGetWindowText(GetDlgItem(hwndDlg, IDC_VALUES)));
                 EndDialog(hwndDlg, IDOK);
                 break;
             }

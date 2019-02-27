@@ -72,7 +72,7 @@ INT WINAPI wWinMain(
     {
         static PH_FILETYPE_FILTER filters[] =
         {
-            { L"Supported files (*.exe;*.dll;*.ocx;*.sys;*.scr;*.cpl;*.ax;*.acm;*.lib)", L"*.exe;*.dll;*.ocx;*.sys;*.scr;*.cpl;*.ax;*.acm;*.lib" },
+            { L"Supported files (*.exe;*.dll;*.ocx;*.sys;*.scr;*.cpl;*.ax;*.acm;*.lib;*.winmd;*.efi)", L"*.exe;*.dll;*.ocx;*.sys;*.scr;*.cpl;*.ax;*.acm;*.lib;*.winmd;*.efi" },
             { L"All files (*.*)", L"*.*" }
         };
         PVOID fileDialog;
@@ -101,7 +101,7 @@ INT WINAPI wWinMain(
         targetFileName = PvResolveShortcutTarget(PvFileName);
 
         if (targetFileName)
-            PhSwapReference2(&PvFileName, targetFileName);
+            PhMoveReference(&PvFileName, targetFileName);
     }
 
     if (!PhEndsWithString2(PvFileName, L".lib", TRUE))

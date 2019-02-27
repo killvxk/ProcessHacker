@@ -53,7 +53,7 @@ VOID PhShowProcessRecordDialog(
         );
 }
 
-PPH_STRING PhapGetRelativeTimeString(
+PPH_STRING PhpaGetRelativeTimeString(
     _In_ PLARGE_INTEGER Time
     )
 {
@@ -65,12 +65,12 @@ PPH_STRING PhapGetRelativeTimeString(
 
     time = *Time;
     PhQuerySystemTime(&currentTime);
-    timeRelativeString = PHA_DEREFERENCE(PhFormatTimeSpanRelative(currentTime.QuadPart - time.QuadPart));
+    timeRelativeString = PhAutoDereferenceObject(PhFormatTimeSpanRelative(currentTime.QuadPart - time.QuadPart));
 
     PhLargeIntegerToLocalSystemTime(&timeFields, &time);
     timeString = PhaFormatDateTime(&timeFields);
 
-    return PhaFormatString(L"%s (%s)", timeRelativeString->Buffer, timeString->Buffer);
+    return PhaFormatString(L"%s ago (%s)", timeRelativeString->Buffer, timeString->Buffer);
 }
 
 FORCEINLINE PWSTR PhpGetStringOrNa(
@@ -122,7 +122,7 @@ INT_PTR CALLBACK PhpProcessRecordDlgProc(
             if (!PH_IS_FAKE_PROCESS_ID(context->Record->ProcessId))
             {
                 processNameString = PhaFormatString(L"%s (%u)",
-                    context->Record->ProcessName->Buffer, (ULONG)context->Record->ProcessId);
+                    context->Record->ProcessName->Buffer, HandleToUlong(context->Record->ProcessId));
             }
             else
             {
@@ -130,6 +130,7 @@ INT_PTR CALLBACK PhpProcessRecordDlgProc(
             }
 
             PhCenterWindow(hwndDlg, GetParent(hwndDlg));
+            SendMessage(hwndDlg, WM_NEXTDLGCTL, (WPARAM)GetDlgItem(hwndDlg, IDOK), TRUE);
             SetWindowText(hwndDlg, processNameString->Buffer);
 
             SetDlgItemText(hwndDlg, IDC_PROCESSNAME, processNameString->Buffer);
@@ -150,14 +151,14 @@ INT_PTR CALLBACK PhpProcessRecordDlgProc(
                     clientId.UniqueThread = NULL;
 
                     SetDlgItemText(hwndDlg, IDC_PARENT,
-                        ((PPH_STRING)PHA_DEREFERENCE(PhGetClientIdNameEx(&clientId, parentProcess->ProcessName)))->Buffer);
+                        ((PPH_STRING)PhAutoDereferenceObject(PhGetClientIdNameEx(&clientId, parentProcess->ProcessName)))->Buffer);
 
                     PhDereferenceObject(parentProcess);
                 }
                 else
                 {
                     SetDlgItemText(hwndDlg, IDC_PARENT, PhaFormatString(L"Non-existent process (%u)",
-                        (ULONG)context->Record->ParentProcessId)->Buffer);
+                        HandleToUlong(context->Record->ParentProcessId))->Buffer);
                 }
 
                 PhDereferenceObject(processItem);
@@ -165,7 +166,7 @@ INT_PTR CALLBACK PhpProcessRecordDlgProc(
             else
             {
                 SetDlgItemText(hwndDlg, IDC_PARENT, PhaFormatString(L"Unknown process (%u)",
-                    (ULONG)context->Record->ParentProcessId)->Buffer);
+                    HandleToUlong(context->Record->ParentProcessId))->Buffer);
 
                 EnableWindow(GetDlgItem(hwndDlg, IDC_PROPERTIES), FALSE);
             }
@@ -200,12 +201,12 @@ INT_PTR CALLBACK PhpProcessRecordDlgProc(
             SetDlgItemText(hwndDlg, IDC_CMDLINE, PhpGetStringOrNa(context->Record->CommandLine));
 
             if (context->Record->CreateTime.QuadPart != 0)
-                SetDlgItemText(hwndDlg, IDC_STARTED, PhapGetRelativeTimeString(&context->Record->CreateTime)->Buffer);
+                SetDlgItemText(hwndDlg, IDC_STARTED, PhpaGetRelativeTimeString(&context->Record->CreateTime)->Buffer);
             else
                 SetDlgItemText(hwndDlg, IDC_STARTED, L"N/A");
 
             if (context->Record->ExitTime.QuadPart != 0)
-                SetDlgItemText(hwndDlg, IDC_TERMINATED, PhapGetRelativeTimeString(&context->Record->ExitTime)->Buffer);
+                SetDlgItemText(hwndDlg, IDC_TERMINATED, PhpaGetRelativeTimeString(&context->Record->ExitTime)->Buffer);
             else
                 SetDlgItemText(hwndDlg, IDC_TERMINATED, L"N/A");
 

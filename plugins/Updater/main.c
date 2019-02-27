@@ -1,8 +1,8 @@
 /*
- * Process Hacker Update Checker -
- *   Main program
+ * Process Hacker Plugins -
+ *   Update Checker Plugin
  *
- * Copyright (C) 2012 dmex
+ * Copyright (C) 2011-2015 dmex
  *
  * This file is part of Process Hacker.
  *
@@ -22,98 +22,37 @@
 
 #include "updater.h"
 
-VOID NTAPI LoadCallback(
-    _In_opt_ PVOID Parameter,
-    _In_opt_ PVOID Context
-    );
-VOID NTAPI MenuItemCallback(
-    _In_opt_ PVOID Parameter,
-    _In_opt_ PVOID Context
-    );
-VOID NTAPI MainWindowShowingCallback(
-    _In_opt_ PVOID Parameter,
-    _In_opt_ PVOID Context
-    );
-VOID NTAPI ShowOptionsCallback(
-    _In_opt_ PVOID Parameter,
-    _In_opt_ PVOID Context
-    );
-
 PPH_PLUGIN PluginInstance;
 static PH_CALLBACK_REGISTRATION PluginMenuItemCallbackRegistration;
+static PH_CALLBACK_REGISTRATION MainMenuInitializingCallbackRegistration;
 static PH_CALLBACK_REGISTRATION MainWindowShowingCallbackRegistration;
 static PH_CALLBACK_REGISTRATION PluginShowOptionsCallbackRegistration;
-
-LOGICAL DllMain(
-    _In_ HINSTANCE Instance,
-    _In_ ULONG Reason,
-    _Reserved_ PVOID Reserved
-    )
-{
-    switch (Reason)
-    {
-    case DLL_PROCESS_ATTACH:
-        {
-            PPH_PLUGIN_INFORMATION info;
-
-            PluginInstance = PhRegisterPlugin(L"ProcessHacker.UpdateChecker", Instance, &info);
-
-            if (!PluginInstance)
-                return FALSE;
-
-            info->DisplayName = L"Update Checker";
-            info->Author = L"dmex";
-            info->Description = L"Plugin for checking new Process Hacker releases via the Help menu.";
-            info->HasOptions = TRUE;
-
-            PhRegisterCallback(
-                PhGetGeneralCallback(GeneralCallbackMainWindowShowing),
-                MainWindowShowingCallback,
-                NULL,
-                &MainWindowShowingCallbackRegistration
-                );
-            PhRegisterCallback(
-                PhGetPluginCallback(PluginInstance, PluginCallbackMenuItem),
-                MenuItemCallback,
-                NULL,
-                &PluginMenuItemCallbackRegistration
-                );
-            PhRegisterCallback(
-                PhGetPluginCallback(PluginInstance, PluginCallbackShowOptions),
-                ShowOptionsCallback,
-                NULL,
-                &PluginShowOptionsCallbackRegistration
-                );
-
-            {
-                PH_SETTING_CREATE settings[] =
-                {
-                    { IntegerSettingType, SETTING_AUTO_CHECK, L"1" },
-                };
-
-                PhAddSettings(settings, _countof(settings));
-            }
-        }
-        break;
-    }
-
-    return TRUE;
-}
 
 static VOID NTAPI MainWindowShowingCallback(
     _In_opt_ PVOID Parameter,
     _In_opt_ PVOID Context
     )
 {
-    // Add our menu item, 4 = Help menu.
-    PhPluginAddMenuItem(PluginInstance, 4, NULL, UPDATE_MENUITEM, L"Check for Updates", NULL);
-
     // Check if the user want's us to auto-check for updates.
-    if (PhGetIntegerSetting(SETTING_AUTO_CHECK))
+    if (PhGetIntegerSetting(SETTING_NAME_AUTO_CHECK))
     {
         // All good, queue up our update check.
         StartInitialCheck();
     }
+}
+
+static VOID NTAPI MainMenuInitializingCallback(
+    _In_opt_ PVOID Parameter,
+    _In_opt_ PVOID Context
+    )
+{
+    PPH_PLUGIN_MENU_INFORMATION menuInfo = Parameter;
+
+    // Check this menu is the Help menu
+    if (!menuInfo || menuInfo->u.MainMenu.SubMenuIndex != 4)
+        return;
+
+    PhInsertEMenuItem(menuInfo->Menu, PhPluginCreateEMenuItem(PluginInstance, 0, UPDATE_MENUITEM, L"Check for Updates", NULL), 0);
 }
 
 static VOID NTAPI MenuItemCallback(
@@ -121,9 +60,9 @@ static VOID NTAPI MenuItemCallback(
     _In_opt_ PVOID Context
     )
 {
-    PPH_PLUGIN_MENU_ITEM menuItem = (PPH_PLUGIN_MENU_ITEM)Parameter;
+    PPH_PLUGIN_MENU_ITEM menuItem = Parameter;
 
-    if (menuItem != NULL && menuItem->Id == UPDATE_MENUITEM)
+    if (menuItem && menuItem->Id == UPDATE_MENUITEM)
     {
         ShowUpdateDialog(NULL);
     }
@@ -135,7 +74,7 @@ static VOID NTAPI ShowOptionsCallback(
     )
 {
     DialogBox(
-        (HINSTANCE)PluginInstance->DllBase,
+        PluginInstance->DllBase,
         MAKEINTRESOURCE(IDD_OPTIONS),
         (HWND)Parameter,
         OptionsDlgProc
@@ -148,7 +87,7 @@ PPH_STRING PhGetOpaqueXmlNodeText(
 {
     if (xmlNode && xmlNode->child && xmlNode->child->type == MXML_OPAQUE && xmlNode->child->value.opaque)
     {
-        return PhCreateStringFromAnsi(xmlNode->child->value.opaque);
+        return PhConvertUtf8ToUtf16(xmlNode->child->value.opaque);
     }
 
     return PhReferenceEmptyString();
@@ -176,4 +115,65 @@ BOOL PhInstalledUsingSetup(
     }
 
     return FALSE;
+}
+
+LOGICAL DllMain(
+    _In_ HINSTANCE Instance,
+    _In_ ULONG Reason,
+    _Reserved_ PVOID Reserved
+    )
+{
+    switch (Reason)
+    {
+    case DLL_PROCESS_ATTACH:
+        {
+            PPH_PLUGIN_INFORMATION info;
+            PH_SETTING_CREATE settings[] =
+            {
+                { IntegerSettingType, SETTING_NAME_AUTO_CHECK, L"1" },
+                { StringSettingType, SETTING_NAME_LAST_CHECK, L"0" }
+            };
+
+            PluginInstance = PhRegisterPlugin(PLUGIN_NAME, Instance, &info);
+
+            if (!PluginInstance)
+                return FALSE;
+
+            info->DisplayName = L"Update Checker";
+            info->Author = L"dmex";
+            info->Description = L"Plugin for checking new Process Hacker releases via the Help menu.";
+            info->Url = L"http://processhacker.sf.net/forums/viewtopic.php?t=1121";
+            info->HasOptions = TRUE;
+
+            PhRegisterCallback(
+                PhGetGeneralCallback(GeneralCallbackMainWindowShowing),
+                MainWindowShowingCallback,
+                NULL,
+                &MainWindowShowingCallbackRegistration
+                ); 
+            PhRegisterCallback(
+                PhGetGeneralCallback(GeneralCallbackMainMenuInitializing),
+                MainMenuInitializingCallback,
+                NULL,
+                &MainMenuInitializingCallbackRegistration
+                );
+            PhRegisterCallback(
+                PhGetPluginCallback(PluginInstance, PluginCallbackMenuItem),
+                MenuItemCallback,
+                NULL,
+                &PluginMenuItemCallbackRegistration
+                );
+            PhRegisterCallback(
+                PhGetPluginCallback(PluginInstance, PluginCallbackShowOptions),
+                ShowOptionsCallback,
+                NULL,
+                &PluginShowOptionsCallbackRegistration
+                );
+               
+            PhAddSettings(settings, ARRAYSIZE(settings));
+        }
+        break;
+    }
+
+    return TRUE;
 }

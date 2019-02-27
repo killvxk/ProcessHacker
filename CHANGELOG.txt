@@ -1,9 +1,105 @@
 Process Hacker
 
+2.37
+ * HIGHLIGHTS:
+   * Updated for Windows 10
+   * The "Include CPU (and other) usage of children in collapsed processes" option now aggregates memory and I/O statistics
+   * Added regex search to "Find Handles or DLLs"
+   * Added process exit codes to log
+   * Fixed crash that occurred under some conditions when processes terminated
+ * OTHER CHANGES:
+   * Added warning when trying to search for handles when the system has too many handles open
+   * Upgraded to PCRE2
+   * Updated DotNetTools plugin:
+     * Rewrite of .NET Performance statistics and AppDomain enumeration
+   * Updated OnlineChecks plugin:
+     * Fixed virusscan.jotti.org uploader
+   * Updated NetAdapters plugin:
+     * Added adapter details window
+   * Updated ToolStatus plugin:
+     * Added CPU, Memory and I/O graphs to the toolbar (not enabled by default)
+     * Added toolbar and status bar customization, as well as a new theme
+     * Added option to auto-hide the main menu
+   * Updated UserNotes plugin:
+     * Added individual process highlighting support
+
+2.36
+ * HIGHLIGHTS:
+   * New rich pop-up UI when hovering the cursor over a tray icon, showing the most active processes
+   * Completely new Memory tab for processes, with heap, stack and working set usage
+   * Process Hacker now takes 32-bit dumps of 32-bit processes on 64-bit Windows
+     * NOTE: When using the portable (.zip) release, the entire archive must be extracted
+   * Updated DotNetTools plugin:
+     * Process Hacker now displays managed stack traces for 32-bit .NET processes on 64-bit Windows
+     * Fixed inaccurate stack traces when clicking Refresh
+     * Added AppDomain column for threads in .NET programs
+ * OTHER CHANGES:
+   * Added customizable bytes per row setting for memory editor
+   * Dramatically faster handle listing and search when running without administrative privileges
+   * Improved accuracy and speed of symbol resolution, especially when new modules are loaded
+   * Added trigger and delayed start information to service list
+   * Added file information to service list tooltips
+   * Balloon tips for process/service notifications are now clickable
+   * Added handle names for unnamed File objects
+   * Added I/O Priority to tray icon process menu
+   * Added warning for users who attempt to start the 32-bit version on 64-bit Windows
+   * Updated ExtendedServices plugin:
+     * Added service protection and SID information
+     * Added auto-elevation when saving recovery information, triggers and other service settings
+   * Updated ExtendedTools plugin:
+     * Added tray icon mini info window support
+     * Improved automatic GPU node selection
+   * Updated UserNotes plugin:
+     * Added tray icon mini info window support
+   * Fixed a bug in phsvc that caused hangs when automatically elevating actions
+   * Fixed hang when viewing handle security for certain File objects
+   * Fixed lack of information on startup when using slower refresh intervals
+   * Fixed Read/Write Address crash
+   * Fixed service non-polling mode on Windows 8 and above
+   * Fixed file dialog crash in Windows PE environments
+   * Fixed string scanning false positive case
+   * Fixed process window detection for Modern UI apps
+   * Fixed handle list selection bug when disabling "Hide unnamed handles"
+ * NOTE:
+   * This release has significant internal code changes. Please make sure all plugins are up-to-date.
+
+2.35
+ * NEW/IMPROVED:
+   * Added Load Time and Load Reason columns for modules (Windows 8 and above)
+   * Added handle names for Job and Section objects
+   * Added Read/Write Memory for Section objects (in process Handles tab)
+   * Added CF Guard (Control Flow Guard) column for processes and modules
+   * Added highlighting for AppContainer DLLs
+   * Added AppContainer and CF Guard image characteristics to peview
+   * Added Open Key and Open File Location menu items for services
+   * Set priority and I/O priority for multiple processes at once
+   * Support for up to 64 processors when setting process/thread affinity
+   * Updated ExtendedTools plugin:
+     * Added Disk and Network graphs for all processes
+   * Updated UserNotes plugin:
+     * Added ability to save I/O priority
+ * FIXED:
+   * Fixed memory editor copy bug
+
 2.34
  * NEW/IMPROVED:
+   * Proper Unicode support
+   * CPU and GPU graphs are displayed in a grid now (thanks pavel_kv!)
+   * Start Task Manager now elevates when necessary
+   * Better names for memory regions in Memory tab (for PEBs, TEBs, thread stacks)
+   * Added tooltip information for user-mode driver framework (UMDF) host processes
+   * Added option to reduce row height (set ThinRows to 1 in settings.xml)
+   * Added NetAdapters plugin: adds graphs for selected network adapters to the System Information window
+   * Updated ExtendedTools plugin:
+     * Added GPU graphs for all processes
+     * Can now use the search box in the Disk tab
+     * Improved kernel logger handling
  * FIXED:
    * Fixed touch scrolling
+   * Fixed EtwRegistration object names for 64-bit Windows 8.1
+   * Fixed tray icons being clipped in high DPI environments
+   * Fixed crash in memory editor
+   * Fixed multi monitor window placement bug
 
 2.33
  * NEW/IMPROVED:

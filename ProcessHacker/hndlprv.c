@@ -2,7 +2,7 @@
  * Process Hacker -
  *   handle provider
  *
- * Copyright (C) 2010-2011 wj32
+ * Copyright (C) 2010-2015 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -20,10 +20,15 @@
  * along with Process Hacker.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#define PH_HNDLPRV_PRIVATE
 #include <phapp.h>
 #include <kphuser.h>
 #include <extmgri.h>
+
+typedef struct _PHP_CREATE_HANDLE_ITEM_CONTEXT
+{
+    PPH_HANDLE_PROVIDER Provider;
+    PSYSTEM_HANDLE_TABLE_ENTRY_INFO_EX Handle;
+} PHP_CREATE_HANDLE_ITEM_CONTEXT, *PPHP_CREATE_HANDLE_ITEM_CONTEXT;
 
 VOID NTAPI PhpHandleProviderDeleteProcedure(
     _In_ PVOID Object,
@@ -42,21 +47,8 @@ BOOLEAN PhHandleProviderInitialization(
     VOID
     )
 {
-    if (!NT_SUCCESS(PhCreateObjectType(
-        &PhHandleProviderType,
-        L"HandleProvider",
-        0,
-        PhpHandleProviderDeleteProcedure
-        )))
-        return FALSE;
-
-    if (!NT_SUCCESS(PhCreateObjectType(
-        &PhHandleItemType,
-        L"HandleItem",
-        0,
-        PhpHandleItemDeleteProcedure
-        )))
-        return FALSE;
+    PhHandleProviderType = PhCreateObjectType(L"HandleProvider", 0, PhpHandleProviderDeleteProcedure);
+    PhHandleItemType = PhCreateObjectType(L"HandleItem", 0, PhpHandleItemDeleteProcedure);
 
     return TRUE;
 }
@@ -67,13 +59,10 @@ PPH_HANDLE_PROVIDER PhCreateHandleProvider(
 {
     PPH_HANDLE_PROVIDER handleProvider;
 
-    if (!NT_SUCCESS(PhCreateObject(
-        &handleProvider,
-        sizeof(PH_HANDLE_PROVIDER),
-        0,
+    handleProvider = PhCreateObject(
+        PhEmGetObjectSize(EmHandleProviderType, sizeof(PH_HANDLE_PROVIDER)),
         PhHandleProviderType
-        )))
-        return NULL;
+        );
 
     handleProvider->HandleHashSetSize = 128;
     handleProvider->HandleHashSet = PhCreateHashSet(handleProvider->HandleHashSetSize);
@@ -96,6 +85,8 @@ PPH_HANDLE_PROVIDER PhCreateHandleProvider(
 
     handleProvider->TempListHashtable = PhCreateSimpleHashtable(20);
 
+    PhEmCallObjectOperation(EmHandleProviderType, handleProvider, EmObjectCreate);
+
     return handleProvider;
 }
 
@@ -105,6 +96,8 @@ VOID PhpHandleProviderDeleteProcedure(
     )
 {
     PPH_HANDLE_PROVIDER handleProvider = (PPH_HANDLE_PROVIDER)Object;
+
+    PhEmCallObjectOperation(EmHandleProviderType, handleProvider, EmObjectDelete);
 
     // Dereference all handle items (we referenced them
     // when we added them to the hashtable).
@@ -126,14 +119,10 @@ PPH_HANDLE_ITEM PhCreateHandleItem(
 {
     PPH_HANDLE_ITEM handleItem;
 
-    if (!NT_SUCCESS(PhCreateObject(
-        &handleItem,
+    handleItem = PhCreateObject(
         PhEmGetObjectSize(EmHandleItemType, sizeof(PH_HANDLE_ITEM)),
-        0,
         PhHandleItemType
-        )))
-        return NULL;
-
+        );
     memset(handleItem, 0, sizeof(PH_HANDLE_ITEM));
 
     if (Handle)
@@ -144,7 +133,7 @@ PPH_HANDLE_ITEM PhCreateHandleItem(
         PhPrintPointer(handleItem->ObjectString, handleItem->Object);
         handleItem->Attributes = Handle->HandleAttributes;
         handleItem->GrantedAccess = (ACCESS_MASK)Handle->GrantedAccess;
-        PhPrintPointer(handleItem->GrantedAccessString, (PVOID)handleItem->GrantedAccess);
+        PhPrintPointer(handleItem->GrantedAccessString, UlongToPtr(handleItem->GrantedAccess));
     }
 
     PhEmCallObjectOperation(EmHandleItemType, handleItem, EmObjectCreate);
@@ -178,7 +167,7 @@ FORCEINLINE ULONG PhHashHandleItem(
     _In_ PPH_HANDLE_ITEM Value
     )
 {
-    return (ULONG)Value->Handle / 4;
+    return HandleToUlong(Value->Handle) / 4;
 }
 
 PPH_HANDLE_ITEM PhpLookupHandleItem(
@@ -321,7 +310,7 @@ NTSTATUS PhEnumHandlesGeneric(
         // Enumerate handles using KProcessHacker. Unlike with NtQuerySystemInformation,
         // this only enumerates handles for a single process and saves a lot of processing.
 
-        if (NT_SUCCESS(status = PhEnumProcessHandles(ProcessHandle, &handles)))
+        if (NT_SUCCESS(status = KphEnumerateProcessHandles2(ProcessHandle, &handles)))
         {
             convertedHandles = PhAllocate(
                 FIELD_OFFSET(SYSTEM_HANDLE_INFORMATION_EX, Handles) +
@@ -422,10 +411,55 @@ NTSTATUS PhEnumHandlesGeneric(
     return STATUS_SUCCESS;
 }
 
+NTSTATUS PhpCreateHandleItemFunction(
+    _In_ PVOID Parameter
+    )
+{
+    PPHP_CREATE_HANDLE_ITEM_CONTEXT context = Parameter;
+    PPH_HANDLE_ITEM handleItem;
+
+    handleItem = PhCreateHandleItem(context->Handle);
+
+    PhGetHandleInformationEx(
+        context->Provider->ProcessHandle,
+        handleItem->Handle,
+        context->Handle->ObjectTypeIndex,
+        0,
+        NULL,
+        NULL,
+        &handleItem->TypeName,
+        &handleItem->ObjectName,
+        &handleItem->BestObjectName,
+        NULL
+        );
+
+    if (handleItem->TypeName)
+    {
+        // Add the handle item to the hashtable.
+        PhAcquireQueuedLockExclusive(&context->Provider->HandleHashSetLock);
+        PhpAddHandleItem(context->Provider, handleItem);
+        PhReleaseQueuedLockExclusive(&context->Provider->HandleHashSetLock);
+
+        // Raise the handle added event.
+        PhInvokeCallback(&context->Provider->HandleAddedEvent, handleItem);
+    }
+    else
+    {
+        PhDereferenceObject(handleItem);
+    }
+
+    PhFree(context);
+
+    return STATUS_SUCCESS;
+}
+
 VOID PhHandleProviderUpdate(
     _In_ PVOID Object
     )
 {
+    static PH_INITONCE initOnce = PH_INITONCE_INIT;
+    static ULONG fileObjectTypeIndex = -1;
+
     PPH_HANDLE_PROVIDER handleProvider = (PPH_HANDLE_PROVIDER)Object;
     PSYSTEM_HANDLE_INFORMATION_EX handleInfo;
     BOOLEAN filterNeeded;
@@ -434,6 +468,8 @@ VOID PhHandleProviderUpdate(
     ULONG i;
     PH_HASHTABLE_ENUM_CONTEXT enumContext;
     PPH_KEY_VALUE_PAIR handlePair;
+    BOOLEAN useWorkQueue = FALSE;
+    PH_WORK_QUEUE workQueue;
 
     if (!handleProvider->ProcessHandle)
         goto UpdateExit;
@@ -445,6 +481,21 @@ VOID PhHandleProviderUpdate(
         &filterNeeded
         )))
         goto UpdateExit;
+
+    if (!KphIsConnected() && WindowsVersion >= WINDOWS_VISTA)
+    {
+        useWorkQueue = TRUE;
+        PhInitializeWorkQueue(&workQueue, 1, 20, 1000);
+
+        if (PhBeginInitOnce(&initOnce))
+        {
+            UNICODE_STRING fileTypeName;
+
+            RtlInitUnicodeString(&fileTypeName, L"File");
+            fileObjectTypeIndex = PhGetObjectTypeNumber(&fileTypeName);
+            PhEndInitOnce(&initOnce);
+        }
+    }
 
     handles = handleInfo->Handles;
     numberOfHandles = (ULONG)handleInfo->NumberOfHandles;
@@ -557,6 +608,19 @@ VOID PhHandleProviderUpdate(
 
         if (!handleItem)
         {
+            // When we don't have KPH, query handle information in parallel to take full advantage of the
+            // PhCallWithTimeout functionality.
+            if (useWorkQueue && handle->ObjectTypeIndex == fileObjectTypeIndex)
+            {
+                PPHP_CREATE_HANDLE_ITEM_CONTEXT context;
+
+                context = PhAllocate(sizeof(PHP_CREATE_HANDLE_ITEM_CONTEXT));
+                context->Provider = handleProvider;
+                context->Handle = handle;
+                PhQueueItemWorkQueue(&workQueue, PhpCreateHandleItemFunction, context);
+                continue;
+            }
+
             handleItem = PhCreateHandleItem(handle);
 
             PhGetHandleInformationEx(
@@ -625,6 +689,12 @@ VOID PhHandleProviderUpdate(
                 PhInvokeCallback(&handleProvider->HandleModifiedEvent, handleItem);
             }
         }
+    }
+
+    if (useWorkQueue)
+    {
+        PhWaitForWorkQueue(&workQueue);
+        PhDeleteWorkQueue(&workQueue);
     }
 
     PhFree(handleInfo);

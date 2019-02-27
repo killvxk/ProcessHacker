@@ -22,6 +22,8 @@
 
 #include "wndexp.h"
 
+// WARNING: No functions from ProcessHacker.exe should be used in this file!
+
 PVOID WeGetProcedureAddress(
     _In_ PSTR Name
     )

@@ -125,6 +125,8 @@ ZwQuerySystemInformation(
 
 // OB
 
+// These definitions are no longer correct, but they produce correct results.
+
 #define OBJ_PROTECT_CLOSE 0x00000001
 #define OBJ_HANDLE_ATTRIBUTES (OBJ_PROTECT_CLOSE | OBJ_INHERIT | OBJ_AUDIT_OBJECT_CLOSE)
 
@@ -165,17 +167,18 @@ FORCEINLINE ULONG ObpGetHandleAttributes(PHANDLE_TABLE_ENTRY HandleTableEntry)
     }
     else
     {
-        return (HandleTableEntry->ObAttributes & (OBJ_INHERIT | OBJ_AUDIT_OBJECT_CLOSE)) | 
+        return (HandleTableEntry->ObAttributes & (OBJ_INHERIT | OBJ_AUDIT_OBJECT_CLOSE)) |
             ((HandleTableEntry->GrantedAccess & ObpAccessProtectCloseBit) ? OBJ_PROTECT_CLOSE : 0);
     }
 #else
-    return (HandleTableEntry->ObAttributes & (OBJ_INHERIT | OBJ_AUDIT_OBJECT_CLOSE)) | 
+    return (HandleTableEntry->ObAttributes & (OBJ_INHERIT | OBJ_AUDIT_OBJECT_CLOSE)) |
         ((HandleTableEntry->GrantedAccess & ObpAccessProtectCloseBit) ? OBJ_PROTECT_CLOSE : 0);
 #endif
 }
 
 typedef struct _OBJECT_CREATE_INFORMATION OBJECT_CREATE_INFORMATION, *POBJECT_CREATE_INFORMATION;
 
+// This is incorrect as of Windows 8.1, but the size of the structure is still correct.
 typedef struct _OBJECT_HEADER
 {
     LONG PointerCount;

@@ -21,6 +21,7 @@
  */
 
 #include <phapp.h>
+#include <symprv.h>
 
 typedef struct NETWORK_STACK_CONTEXT
 {
@@ -171,7 +172,7 @@ static INT_PTR CALLBACK PhpNetworkStackDlgProc(
             {
                 PPH_STRING name;
 
-                address = *(PPVOID)&networkStackContext->NetworkItem->OwnerInfo[i];
+                address = *(PVOID *)&networkStackContext->NetworkItem->OwnerInfo[i];
 
                 if ((ULONG_PTR)address < PAGE_SIZE) // stop at an invalid address
                     break;

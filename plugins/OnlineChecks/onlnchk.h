@@ -3,7 +3,7 @@
  *   Main Headers
  *
  * Copyright (C) 2010-2013 wj32
- * Copyright (C) 2012-2014 dmex
+ * Copyright (C) 2012-2016 dmex
  *
  * This file is part of Process Hacker.
  *
@@ -35,7 +35,7 @@
 #include "sha256.h"
 #include "resource.h"
 
-#define SETTING_PREFIX L"ProcessHacker.OnlineChecks"
+#define PLUGIN_NAME L"ProcessHacker.OnlineChecks"
 
 #define HASH_SHA1 1
 #define HASH_SHA256 2

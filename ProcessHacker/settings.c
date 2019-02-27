@@ -2,7 +2,7 @@
  * Process Hacker -
  *   program settings
  *
- * Copyright (C) 2010-2013 wj32
+ * Copyright (C) 2010-2016 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -88,6 +88,7 @@ VOID PhSettingsInitialization(
     PhpAddIntegerSetting(L"EnableStage2", L"1");
     PhpAddIntegerSetting(L"EnableWarnings", L"1");
     PhpAddStringSetting(L"EnvironmentListViewColumns", L"");
+    PhpAddIntegerSetting(L"FindObjRegex", L"0");
     PhpAddStringSetting(L"FindObjListViewColumns", L"");
     PhpAddIntegerPairSetting(L"FindObjWindowPosition", L"350,350");
     PhpAddIntegerPairSetting(L"FindObjWindowSize", L"550,420");
@@ -109,7 +110,7 @@ VOID PhSettingsInitialization(
     PhpAddIntegerSetting(L"IconMask", L"1"); // PH_ICON_CPU_HISTORY
     PhpAddStringSetting(L"IconMaskList", L"");
     PhpAddIntegerSetting(L"IconNotifyMask", L"c"); // PH_NOTIFY_SERVICE_CREATE | PH_NOTIFY_SERVICE_DELETE
-    PhpAddIntegerSetting(L"IconProcesses", L"a"); // 10
+    PhpAddIntegerSetting(L"IconProcesses", L"f"); // 15
     PhpAddIntegerSetting(L"IconSingleClick", L"0");
     PhpAddIntegerSetting(L"IconTogglesVisibility", L"1");
     PhpAddIntegerSetting(L"LogEntries", L"200"); // 512
@@ -122,6 +123,7 @@ VOID PhSettingsInitialization(
     PhpAddIntegerPairSetting(L"MainWindowSize", L"800,600");
     PhpAddIntegerSetting(L"MainWindowState", L"1");
     PhpAddIntegerSetting(L"MaxSizeUnit", L"6");
+    PhpAddIntegerSetting(L"MemEditBytesPerRow", L"10"); // 16
     PhpAddStringSetting(L"MemEditGotoChoices", L"");
     PhpAddIntegerPairSetting(L"MemEditPosition", L"450,450");
     PhpAddIntegerPairSetting(L"MemEditSize", L"600,500");
@@ -129,9 +131,16 @@ VOID PhSettingsInitialization(
     PhpAddStringSetting(L"MemResultsListViewColumns", L"");
     PhpAddIntegerPairSetting(L"MemResultsPosition", L"300,300");
     PhpAddIntegerPairSetting(L"MemResultsSize", L"500,520");
-    PhpAddStringSetting(L"MemoryListViewColumns", L"");
+    PhpAddStringSetting(L"MemoryTreeListColumns", L"");
+    PhpAddStringSetting(L"MemoryTreeListSort", L"0,0"); // 0, NoSortOrder
     PhpAddIntegerPairSetting(L"MemoryListsWindowPosition", L"400,400");
     PhpAddStringSetting(L"MemoryReadWriteAddressChoices", L"");
+    PhpAddIntegerSetting(L"MiniInfoWindowEnabled", L"1");
+    PhpAddIntegerSetting(L"MiniInfoWindowOpacity", L"0"); // means 100%
+    PhpAddIntegerSetting(L"MiniInfoWindowPinned", L"0");
+    PhpAddIntegerPairSetting(L"MiniInfoWindowPosition", L"200,200");
+    PhpAddIntegerSetting(L"MiniInfoWindowRefreshAutomatically", L"1");
+    PhpAddIntegerPairSetting(L"MiniInfoWindowSize", L"10,10");
     PhpAddStringSetting(L"ModuleTreeListColumns", L"");
     PhpAddStringSetting(L"ModuleTreeListSort", L"0,0"); // 0, NoSortOrder
     PhpAddStringSetting(L"NetworkTreeListColumns", L"");
@@ -156,7 +165,7 @@ VOID PhSettingsInitialization(
     PhpAddStringSetting(L"ServiceTreeListColumns", L"");
     PhpAddStringSetting(L"ServiceTreeListSort", L"0,1"); // 0, AscendingSortOrder
     PhpAddIntegerPairSetting(L"SessionShadowHotkey", L"106,2"); // VK_MULTIPLY,KBDCTRL
-    PhpAddIntegerSetting(L"ShowCommitInSummary", L"0");
+    PhpAddIntegerSetting(L"ShowCommitInSummary", L"1");
     PhpAddIntegerSetting(L"ShowCpuBelow001", L"0");
     PhpAddIntegerSetting(L"StartHidden", L"0");
     PhpAddIntegerSetting(L"SysInfoWindowAlwaysOnTop", L"0");
@@ -164,6 +173,7 @@ VOID PhSettingsInitialization(
     PhpAddIntegerPairSetting(L"SysInfoWindowPosition", L"200,200");
     PhpAddStringSetting(L"SysInfoWindowSection", L"");
     PhpAddIntegerPairSetting(L"SysInfoWindowSize", L"620,590");
+    PhpAddIntegerSetting(L"ThinRows", L"0");
     PhpAddStringSetting(L"ThreadTreeListColumns", L"");
     PhpAddStringSetting(L"ThreadTreeListSort", L"1,2"); // 1, DescendingSortOrder
     PhpAddStringSetting(L"ThreadStackListViewColumns", L"");
@@ -359,12 +369,11 @@ static BOOLEAN PhpSettingFromString(
         {
             if (String)
             {
-                PhReferenceObject(String);
-                Setting->u.Pointer = String;
+                PhSetReference(&Setting->u.Pointer, String);
             }
             else
             {
-                Setting->u.Pointer = PhCreateStringEx(StringRef->Buffer, StringRef->Length);
+                Setting->u.Pointer = PhCreateString2(StringRef);
             }
 
             return TRUE;
@@ -519,8 +528,7 @@ _May_raise_ PPH_STRING PhGetStringSetting(
     {
         if (setting->u.Pointer)
         {
-            value = setting->u.Pointer;
-            PhReferenceObject(value);
+            PhSetReference(&value, setting->u.Pointer);
         }
         else
         {
@@ -638,7 +646,7 @@ _May_raise_ VOID PhSetStringSetting2(
     if (setting && setting->Type == StringSettingType)
     {
         PhpFreeSettingValue(StringSettingType, setting);
-        setting->u.Pointer = PhCreateStringEx(Value->Buffer, Value->Length);
+        setting->u.Pointer = PhCreateString2(Value);
     }
 
     PhReleaseQueuedLockExclusive(&PhSettingsLock);
@@ -786,10 +794,10 @@ NTSTATUS PhLoadSettings(
         if (
             currentNode->type == MXML_ELEMENT &&
             currentNode->value.element.num_attrs >= 1 &&
-            stricmp(currentNode->value.element.attrs[0].name, "name") == 0
+            _stricmp(currentNode->value.element.attrs[0].name, "name") == 0
             )
         {
-            settingName = PhCreateStringFromAnsi(currentNode->value.element.attrs[0].value);
+            settingName = PhConvertUtf8ToUtf16(currentNode->value.element.attrs[0].value);
         }
 
         if (settingName)
@@ -857,14 +865,14 @@ char *PhpSettingsSaveCallback(
     _In_ int position
     )
 {
-    if (STR_IEQUAL(node->value.element.name, "setting"))
+    if (PhEqualBytesZ(node->value.element.name, "setting", TRUE))
     {
         if (position == MXML_WS_BEFORE_OPEN)
             return "  ";
         else if (position == MXML_WS_AFTER_CLOSE)
             return "\r\n";
     }
-    else if (STR_IEQUAL(node->value.element.name, "settings"))
+    else if (PhEqualBytesZ(node->value.element.name, "settings", TRUE))
     {
         if (position == MXML_WS_AFTER_OPEN)
             return "\r\n";
@@ -881,22 +889,22 @@ mxml_node_t *PhpCreateSettingElement(
 {
     mxml_node_t *settingNode;
     mxml_node_t *textNode;
-    PPH_ANSI_STRING settingNameAnsi;
-    PPH_ANSI_STRING settingValueAnsi;
+    PPH_BYTES settingNameUtf8;
+    PPH_BYTES settingValueUtf8;
 
     // Create the setting element.
 
     settingNode = mxmlNewElement(ParentNode, "setting");
 
-    settingNameAnsi = PhCreateAnsiStringFromUnicodeEx(SettingName->Buffer, SettingName->Length);
-    mxmlElementSetAttr(settingNode, "name", settingNameAnsi->Buffer);
-    PhDereferenceObject(settingNameAnsi);
+    settingNameUtf8 = PhConvertUtf16ToUtf8Ex(SettingName->Buffer, SettingName->Length);
+    mxmlElementSetAttr(settingNode, "name", settingNameUtf8->Buffer);
+    PhDereferenceObject(settingNameUtf8);
 
     // Set the value.
 
-    settingValueAnsi = PhCreateAnsiStringFromUnicodeEx(SettingValue->Buffer, SettingValue->Length);
-    textNode = mxmlNewOpaque(settingNode, settingValueAnsi->Buffer);
-    PhDereferenceObject(settingValueAnsi);
+    settingValueUtf8 = PhConvertUtf16ToUtf8Ex(SettingValue->Buffer, SettingValue->Length);
+    textNode = mxmlNewOpaque(settingNode, settingValueUtf8->Buffer);
+    PhDereferenceObject(settingValueUtf8);
 
     return settingNode;
 }
@@ -1020,8 +1028,8 @@ VOID PhAddSettings(
         PH_STRINGREF name;
         PH_STRINGREF defaultValue;
 
-        PhInitializeStringRef(&name, Settings[i].Name);
-        PhInitializeStringRef(&defaultValue, Settings[i].DefaultValue);
+        PhInitializeStringRefLongHint(&name, Settings[i].Name);
+        PhInitializeStringRefLongHint(&defaultValue, Settings[i].DefaultValue);
         PhpAddSetting(Settings[i].Type, &name, &defaultValue);
     }
 

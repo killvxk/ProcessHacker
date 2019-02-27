@@ -2,7 +2,7 @@
  * Process Hacker .NET Tools -
  *   thread stack extensions
  *
- * Copyright (C) 2011 wj32
+ * Copyright (C) 2011-2015 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -22,31 +22,50 @@
 
 #include "dn.h"
 #include "clrsup.h"
+#include "svcext.h"
+#include <symprv.h>
 
 typedef struct _THREAD_STACK_CONTEXT
 {
     PCLR_PROCESS_SUPPORT Support;
+    HANDLE ProcessId;
     HANDLE ThreadId;
     HANDLE ThreadHandle;
 
-#ifndef _M_X64
     PVOID PredictedEip;
     PVOID PredictedEbp;
     PVOID PredictedEsp;
+
+#ifdef _WIN64
+    BOOLEAN IsWow64;
+    BOOLEAN ConnectedToPhSvc;
 #endif
 } THREAD_STACK_CONTEXT, *PTHREAD_STACK_CONTEXT;
-
-VOID PredictAddressesFromClrData(
-    _In_ PTHREAD_STACK_CONTEXT Context,
-    _In_ PPH_THREAD_STACK_FRAME Frame,
-    _Out_ PVOID *PredictedEip,
-    _Out_ PVOID *PredictedEbp,
-    _Out_ PVOID *PredictedEsp
-    );
 
 static PPH_HASHTABLE ContextHashtable;
 static PH_QUEUED_LOCK ContextHashtableLock = PH_QUEUED_LOCK_INIT;
 static PH_INITONCE ContextHashtableInitOnce = PH_INITONCE_INIT;
+
+PTHREAD_STACK_CONTEXT FindThreadStackContext(
+    _In_ PVOID UniqueKey
+    )
+{
+    PTHREAD_STACK_CONTEXT context;
+    PVOID *item;
+
+    PhAcquireQueuedLockExclusive(&ContextHashtableLock);
+
+    item = PhFindItemSimpleHashtable(ContextHashtable, UniqueKey);
+
+    if (item)
+        context = *item;
+    else
+        context = NULL;
+
+    PhReleaseQueuedLockExclusive(&ContextHashtableLock);
+
+    return context;
+}
 
 VOID ProcessThreadStackControl(
     _In_ PPH_PLUGIN_THREAD_STACK_CONTROL Control
@@ -63,16 +82,23 @@ VOID ProcessThreadStackControl(
     case PluginThreadStackInitializing:
         {
             PTHREAD_STACK_CONTEXT context;
-            BOOLEAN isDotNet;
-
-            if (!NT_SUCCESS(PhGetProcessIsDotNet(Control->u.Initializing.ProcessId, &isDotNet)) || !isDotNet)
-                return;
+#if _WIN64
+            HANDLE processHandle;
+#endif
 
             context = PhAllocate(sizeof(THREAD_STACK_CONTEXT));
             memset(context, 0, sizeof(THREAD_STACK_CONTEXT));
-            context->Support = CreateClrProcessSupport(Control->u.Initializing.ProcessId);
+            context->ProcessId = Control->u.Initializing.ProcessId;
             context->ThreadId = Control->u.Initializing.ThreadId;
             context->ThreadHandle = Control->u.Initializing.ThreadHandle;
+
+#if _WIN64
+            if (NT_SUCCESS(PhOpenProcess(&processHandle, ProcessQueryAccess, Control->u.Initializing.ProcessId)))
+            {
+                PhGetProcessIsWow64(processHandle, &context->IsWow64);
+                NtClose(processHandle);
+            }
+#endif
 
             PhAcquireQueuedLockExclusive(&ContextHashtableLock);
             PhAddItemSimpleHashtable(ContextHashtable, Control->UniqueKey, context);
@@ -81,25 +107,10 @@ VOID ProcessThreadStackControl(
         break;
     case PluginThreadStackUninitializing:
         {
-            PTHREAD_STACK_CONTEXT context;
-            PVOID *item;
-
-            PhAcquireQueuedLockExclusive(&ContextHashtableLock);
-
-            item = PhFindItemSimpleHashtable(ContextHashtable, Control->UniqueKey);
-
-            if (item)
-                context = *item;
-            else
-                context = NULL;
-
-            PhReleaseQueuedLockExclusive(&ContextHashtableLock);
+            PTHREAD_STACK_CONTEXT context = FindThreadStackContext(Control->UniqueKey);
 
             if (!context)
                 return;
-
-            if (context->Support)
-                FreeClrProcessSupport(context->Support);
 
             PhFree(context);
 
@@ -110,28 +121,16 @@ VOID ProcessThreadStackControl(
         break;
     case PluginThreadStackResolveSymbol:
         {
-            PTHREAD_STACK_CONTEXT context;
-            PVOID *item;
-            PPH_STRING managedSymbol;
+            PTHREAD_STACK_CONTEXT context = FindThreadStackContext(Control->UniqueKey);
+            PPH_STRING managedSymbol = NULL;
             ULONG64 displacement;
-
-            PhAcquireQueuedLockExclusive(&ContextHashtableLock);
-
-            item = PhFindItemSimpleHashtable(ContextHashtable, Control->UniqueKey);
-
-            if (item)
-                context = *item;
-            else
-                context = NULL;
-
-            PhReleaseQueuedLockExclusive(&ContextHashtableLock);
 
             if (!context)
                 return;
 
             if (context->Support)
             {
-#ifndef _M_X64
+#ifndef _WIN64
                 PVOID predictedEip;
                 PVOID predictedEbp;
                 PVOID predictedEsp;
@@ -141,8 +140,11 @@ VOID ProcessThreadStackControl(
                 predictedEsp = context->PredictedEsp;
 
                 PredictAddressesFromClrData(
-                    context,
-                    Control->u.ResolveSymbol.StackFrame,
+                    context->Support,
+                    context->ThreadId,
+                    Control->u.ResolveSymbol.StackFrame->PcAddress,
+                    Control->u.ResolveSymbol.StackFrame->FrameAddress,
+                    Control->u.ResolveSymbol.StackFrame->StackAddress,
                     &context->PredictedEip,
                     &context->PredictedEbp,
                     &context->PredictedEsp
@@ -161,34 +163,112 @@ VOID ProcessThreadStackControl(
                     (ULONG64)Control->u.ResolveSymbol.StackFrame->PcAddress,
                     &displacement
                     );
-
-                if (managedSymbol)
-                {
-                    if (displacement != 0)
-                    {
-                        PhSwapReference2(&managedSymbol, PhFormatString(L"%s + 0x%I64x", managedSymbol->Buffer, displacement));
-                    }
-
-                    if (Control->u.ResolveSymbol.Symbol->Buffer)
-                        PhSwapReference2(&managedSymbol, PhFormatString(L"%s <-- %s", managedSymbol->Buffer, Control->u.ResolveSymbol.Symbol->Buffer));
-
-                    PhSwapReference2(&Control->u.ResolveSymbol.Symbol, managedSymbol);
-                }
             }
+#ifdef _WIN64
+            else if (context->IsWow64 && context->ConnectedToPhSvc)
+            {
+                PVOID predictedEip;
+                PVOID predictedEbp;
+                PVOID predictedEsp;
+
+                predictedEip = context->PredictedEip;
+                predictedEbp = context->PredictedEbp;
+                predictedEsp = context->PredictedEsp;
+
+                CallPredictAddressesFromClrData(
+                    context->ProcessId,
+                    context->ThreadId,
+                    Control->u.ResolveSymbol.StackFrame->PcAddress,
+                    Control->u.ResolveSymbol.StackFrame->FrameAddress,
+                    Control->u.ResolveSymbol.StackFrame->StackAddress,
+                    &context->PredictedEip,
+                    &context->PredictedEbp,
+                    &context->PredictedEsp
+                    );
+
+                // Fix up dbghelp EBP with real EBP given by the CLR data routines.
+                if (Control->u.ResolveSymbol.StackFrame->PcAddress == predictedEip)
+                {
+                    Control->u.ResolveSymbol.StackFrame->FrameAddress = predictedEbp;
+                    Control->u.ResolveSymbol.StackFrame->StackAddress = predictedEsp;
+                }
+
+                managedSymbol = CallGetRuntimeNameByAddress(
+                    context->ProcessId,
+                    (ULONG64)Control->u.ResolveSymbol.StackFrame->PcAddress,
+                    &displacement
+                    );
+            }
+#endif
+
+            if (managedSymbol)
+            {
+                if (displacement != 0)
+                    PhMoveReference(&managedSymbol, PhFormatString(L"%s + 0x%I64x", managedSymbol->Buffer, displacement));
+
+                if (Control->u.ResolveSymbol.Symbol)
+                    PhMoveReference(&managedSymbol, PhFormatString(L"%s <-- %s", managedSymbol->Buffer, Control->u.ResolveSymbol.Symbol->Buffer));
+
+                PhMoveReference(&Control->u.ResolveSymbol.Symbol, managedSymbol);
+            }
+        }
+        break;
+    case PluginThreadStackBeginDefaultWalkStack:
+        {
+            PTHREAD_STACK_CONTEXT context = FindThreadStackContext(Control->UniqueKey);
+            BOOLEAN isDotNet;
+
+            if (!context)
+                return;
+
+            if (!NT_SUCCESS(PhGetProcessIsDotNet(context->ProcessId, &isDotNet)) || !isDotNet)
+                return;
+
+            context->Support = CreateClrProcessSupport(context->ProcessId);
+
+#ifdef _WIN64
+            if (context->IsWow64)
+                context->ConnectedToPhSvc = PhUiConnectToPhSvcEx(NULL, Wow64PhSvcMode, FALSE);
+#endif
+        }
+        break;
+    case PluginThreadStackEndDefaultWalkStack:
+        {
+            PTHREAD_STACK_CONTEXT context = FindThreadStackContext(Control->UniqueKey);
+
+            if (!context)
+                return;
+
+            if (context->Support)
+            {
+                FreeClrProcessSupport(context->Support);
+                context->Support = NULL;
+            }
+
+#ifdef _WIN64
+            if (context->ConnectedToPhSvc)
+            {
+                PhUiDisconnectFromPhSvc();
+                context->ConnectedToPhSvc = FALSE;
+            }
+#endif
         }
         break;
     }
 }
 
 VOID PredictAddressesFromClrData(
-    _In_ PTHREAD_STACK_CONTEXT Context,
-    _In_ PPH_THREAD_STACK_FRAME Frame,
+    _In_ PCLR_PROCESS_SUPPORT Support,
+    _In_ HANDLE ThreadId,
+    _In_ PVOID PcAddress,
+    _In_ PVOID FrameAddress,
+    _In_ PVOID StackAddress,
     _Out_ PVOID *PredictedEip,
     _Out_ PVOID *PredictedEbp,
     _Out_ PVOID *PredictedEsp
     )
 {
-#ifdef _M_X64
+#ifdef _WIN64
     *PredictedEip = NULL;
     *PredictedEbp = NULL;
     *PredictedEsp = NULL;
@@ -200,8 +280,8 @@ VOID PredictAddressesFromClrData(
     *PredictedEsp = NULL;
 
     if (SUCCEEDED(IXCLRDataProcess_GetTaskByOSThreadID(
-        Context->Support->DataProcess,
-        (ULONG)Context->ThreadId,
+        Support->DataProcess,
+        HandleToUlong(ThreadId),
         &task
         )))
     {
@@ -216,9 +296,9 @@ VOID PredictAddressesFromClrData(
 
             memset(&context, 0, sizeof(CONTEXT));
             context.ContextFlags = CONTEXT_CONTROL;
-            context.Eip = PtrToUlong(Frame->PcAddress);
-            context.Ebp = PtrToUlong(Frame->FrameAddress);
-            context.Esp = PtrToUlong(Frame->StackAddress);
+            context.Eip = PtrToUlong(PcAddress);
+            context.Ebp = PtrToUlong(FrameAddress);
+            context.Esp = PtrToUlong(StackAddress);
 
             result = IXCLRDataStackWalk_SetContext2(stackWalk, CLRDATA_STACK_SET_CURRENT_CONTEXT, sizeof(CONTEXT), (BYTE *)&context);
 

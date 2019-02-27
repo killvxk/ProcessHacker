@@ -2,7 +2,7 @@
  * Process Hacker -
  *   service properties
  *
- * Copyright (C) 2010-2013 wj32
+ * Copyright (C) 2010-2015 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -21,6 +21,7 @@
  */
 
 #include <phapp.h>
+#include <secedit.h>
 #include <phplug.h>
 #include <phsvccl.h>
 #include <windowsx.h>
@@ -58,6 +59,36 @@ static NTSTATUS PhpOpenService(
     *Handle = serviceHandle;
 
     return STATUS_SUCCESS;
+}
+
+static _Callback_ NTSTATUS PhpSetServiceSecurity(
+    _In_ PSECURITY_DESCRIPTOR SecurityDescriptor,
+    _In_ SECURITY_INFORMATION SecurityInformation,
+    _In_opt_ PVOID Context
+    )
+{
+    NTSTATUS status;
+    PPH_STD_OBJECT_SECURITY stdObjectSecurity;
+
+    stdObjectSecurity = (PPH_STD_OBJECT_SECURITY)Context;
+
+    status = PhStdSetObjectSecurity(SecurityDescriptor, SecurityInformation, Context);
+
+    if ((status == STATUS_ACCESS_DENIED || status == NTSTATUS_FROM_WIN32(ERROR_ACCESS_DENIED)) && !PhElevated)
+    {
+        // Elevate using phsvc.
+        if (PhUiConnectToPhSvc(NULL, FALSE))
+        {
+            status = PhSvcCallSetServiceSecurity(
+                ((PPH_SERVICE_ITEM)stdObjectSecurity->Context)->Name->Buffer,
+                SecurityInformation,
+                SecurityDescriptor
+                );
+            PhUiDisconnectFromPhSvc();
+        }
+    }
+
+    return status;
 }
 
 VOID PhShowServiceProperties(
@@ -108,7 +139,7 @@ VOID PhShowServiceProperties(
         pages[propSheetHeader.nPages++] = PhCreateSecurityPage(
             ServiceItem->Name->Buffer,
             PhStdGetObjectSecurity,
-            PhStdSetObjectSecurity,
+            PhpSetServiceSecurity,
             &stdObjectSecurity,
             accessEntries,
             numberOfAccessEntries
@@ -130,7 +161,7 @@ VOID PhShowServiceProperties(
         propSheetHeader.nPages = objectProperties.NumberOfPages;
     }
 
-    PropertySheet(&propSheetHeader);
+    PhModalPropertySheet(&propSheetHeader);
 }
 
 static VOID PhpRefreshControls(
@@ -139,7 +170,7 @@ static VOID PhpRefreshControls(
 {
     if (
         WindowsVersion >= WINDOWS_VISTA &&
-        PhEqualString2(PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_STARTTYPE), L"Auto Start", FALSE)
+        PhEqualString2(PhaGetDlgItemText(hwndDlg, IDC_STARTTYPE), L"Auto Start", FALSE)
         )
     {
         EnableWindow(GetDlgItem(hwndDlg, IDC_DELAYEDSTART), TRUE);
@@ -167,6 +198,7 @@ INT_PTR CALLBACK PhpServiceGeneralDlgProc(
             SC_HANDLE serviceHandle;
             ULONG startType;
             ULONG errorControl;
+            PPH_STRING serviceDll;
 
             // HACK
             PhCenterWindow(GetParent(hwndDlg), GetParent(GetParent(hwndDlg)));
@@ -238,46 +270,14 @@ INT_PTR CALLBACK PhpServiceGeneralDlgProc(
             SetDlgItemText(hwndDlg, IDC_PASSWORD, L"password");
             Button_SetCheck(GetDlgItem(hwndDlg, IDC_PASSWORDCHECK), BST_UNCHECKED);
 
-            SetDlgItemText(hwndDlg, IDC_SERVICEDLL, L"N/A");
-
+            if (NT_SUCCESS(PhGetServiceDllParameter(&serviceItem->Name->sr, &serviceDll)))
             {
-                HANDLE keyHandle;
-                PPH_STRING keyName;
-
-                keyName = PhConcatStrings(
-                    3,
-                    L"System\\CurrentControlSet\\Services\\",
-                    serviceItem->Name->Buffer,
-                    L"\\Parameters"
-                    );
-
-                if (NT_SUCCESS(PhOpenKey(
-                    &keyHandle,
-                    KEY_READ,
-                    PH_KEY_LOCAL_MACHINE,
-                    &keyName->sr,
-                    0
-                    )))
-                {
-                    PPH_STRING serviceDllString;
-
-                    if (serviceDllString = PhQueryRegistryString(keyHandle, L"ServiceDll"))
-                    {
-                        PPH_STRING expandedString;
-
-                        if (expandedString = PhExpandEnvironmentStrings(&serviceDllString->sr))
-                        {
-                            SetDlgItemText(hwndDlg, IDC_SERVICEDLL, expandedString->Buffer);
-                            PhDereferenceObject(expandedString);
-                        }
-
-                        PhDereferenceObject(serviceDllString);
-                    }
-
-                    NtClose(keyHandle);
-                }
-
-                PhDereferenceObject(keyName);
+                SetDlgItemText(hwndDlg, IDC_SERVICEDLL, serviceDll->Buffer);
+                PhDereferenceObject(serviceDll);
+            }
+            else
+            {
+                SetDlgItemText(hwndDlg, IDC_SERVICEDLL, L"N/A");
             }
 
             PhpRefreshControls(hwndDlg);
@@ -325,12 +325,30 @@ INT_PTR CALLBACK PhpServiceGeneralDlgProc(
                         { L"All files (*.*)", L"*.*" }
                     };
                     PVOID fileDialog;
+                    PPH_STRING commandLine;
                     PPH_STRING fileName;
 
                     fileDialog = PhCreateOpenFileDialog();
                     PhSetFileDialogFilter(fileDialog, filters, sizeof(filters) / sizeof(PH_FILETYPE_FILTER));
 
-                    fileName = PhGetFileName(PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_BINARYPATH));
+                    commandLine = PhaGetDlgItemText(hwndDlg, IDC_BINARYPATH);
+
+                    if (context->ServiceItem->Type & SERVICE_WIN32)
+                    {
+                        PH_STRINGREF dummyFileName;
+                        PH_STRINGREF dummyArguments;
+
+                        if (!PhParseCommandLineFuzzy(&commandLine->sr, &dummyFileName, &dummyArguments, &fileName))
+                            fileName = NULL;
+
+                        if (!fileName)
+                            PhSwapReference(&fileName, commandLine);
+                    }
+                    else
+                    {
+                        fileName = PhGetFileName(commandLine);
+                    }
+
                     PhSetFileDialogFileName(fileDialog, fileName->Buffer);
                     PhDereferenceObject(fileName);
 
@@ -401,16 +419,16 @@ INT_PTR CALLBACK PhpServiceGeneralDlgProc(
                         return TRUE;
                     }
 
-                    newServiceTypeString = PHA_DEREFERENCE(PhGetWindowText(GetDlgItem(hwndDlg, IDC_TYPE)));
-                    newServiceStartTypeString = PHA_DEREFERENCE(PhGetWindowText(GetDlgItem(hwndDlg, IDC_STARTTYPE)));
-                    newServiceErrorControlString = PHA_DEREFERENCE(PhGetWindowText(GetDlgItem(hwndDlg, IDC_ERRORCONTROL)));
+                    newServiceTypeString = PhAutoDereferenceObject(PhGetWindowText(GetDlgItem(hwndDlg, IDC_TYPE)));
+                    newServiceStartTypeString = PhAutoDereferenceObject(PhGetWindowText(GetDlgItem(hwndDlg, IDC_STARTTYPE)));
+                    newServiceErrorControlString = PhAutoDereferenceObject(PhGetWindowText(GetDlgItem(hwndDlg, IDC_ERRORCONTROL)));
                     newServiceType = PhGetServiceTypeInteger(newServiceTypeString->Buffer);
                     newServiceStartType = PhGetServiceStartTypeInteger(newServiceStartTypeString->Buffer);
                     newServiceErrorControl = PhGetServiceErrorControlInteger(newServiceErrorControlString->Buffer);
 
-                    newServiceGroup = PHA_DEREFERENCE(PhGetWindowText(GetDlgItem(hwndDlg, IDC_GROUP)));
-                    newServiceBinaryPath = PHA_DEREFERENCE(PhGetWindowText(GetDlgItem(hwndDlg, IDC_BINARYPATH)));
-                    newServiceUserAccount = PHA_DEREFERENCE(PhGetWindowText(GetDlgItem(hwndDlg, IDC_USERACCOUNT)));
+                    newServiceGroup = PhAutoDereferenceObject(PhGetWindowText(GetDlgItem(hwndDlg, IDC_GROUP)));
+                    newServiceBinaryPath = PhAutoDereferenceObject(PhGetWindowText(GetDlgItem(hwndDlg, IDC_BINARYPATH)));
+                    newServiceUserAccount = PhAutoDereferenceObject(PhGetWindowText(GetDlgItem(hwndDlg, IDC_USERACCOUNT)));
 
                     if (Button_GetCheck(GetDlgItem(hwndDlg, IDC_PASSWORDCHECK)) == BST_CHECKED)
                     {
@@ -535,7 +553,7 @@ ErrorCase:
                         hwndDlg,
                         MB_ICONERROR | MB_RETRYCANCEL,
                         L"Unable to change service configuration: %s",
-                        ((PPH_STRING)PHA_DEREFERENCE(PhGetWin32Message(GetLastError())))->Buffer
+                        ((PPH_STRING)PhAutoDereferenceObject(PhGetWin32Message(GetLastError())))->Buffer
                         ) == IDRETRY)
                     {
                         SetWindowLongPtr(hwndDlg, DWLP_MSGRESULT, PSNRET_INVALID);

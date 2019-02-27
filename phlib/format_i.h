@@ -24,18 +24,14 @@
     {
         WCHAR localeBuffer[4];
 
-        if (
-            GetLocaleInfo(LOCALE_USER_DEFAULT, LOCALE_SDECIMAL, localeBuffer, 4) &&
-            (localeBuffer[0] != 0 && localeBuffer[1] == 0)
-            )
+        if (GetLocaleInfo(LOCALE_USER_DEFAULT, LOCALE_SDECIMAL, localeBuffer, 4) &&
+            (localeBuffer[0] != 0 && localeBuffer[1] == 0))
         {
             PhpFormatDecimalSeparator = localeBuffer[0];
         }
 
-        if (
-            GetLocaleInfo(LOCALE_USER_DEFAULT, LOCALE_STHOUSAND, localeBuffer, 4) &&
-            (localeBuffer[0] != 0 && localeBuffer[1] == 0)
-            )
+        if (GetLocaleInfo(LOCALE_USER_DEFAULT, LOCALE_STHOUSAND, localeBuffer, 4) &&
+            (localeBuffer[0] != 0 && localeBuffer[1] == 0))
         {
             PhpFormatThousandSeparator = localeBuffer[0];
         }
@@ -84,35 +80,35 @@
             {
                 SIZE_T count;
 
-                count = wcslen(format->u.StringZ);
+                count = PhCountStringZ(format->u.StringZ);
                 ENSURE_BUFFER(count * sizeof(WCHAR));
                 if (OK_BUFFER)
                     memcpy(buffer, format->u.StringZ, count * sizeof(WCHAR));
                 ADVANCE_BUFFER(count * sizeof(WCHAR));
             }
             break;
-        case AnsiStringFormatType:
-        case AnsiStringZFormatType:
+        case MultiByteStringFormatType:
+        case MultiByteStringZFormatType:
             {
                 ULONG bytesInUnicodeString;
-                PSTR ansiBuffer;
-                SIZE_T ansiLength;
+                PSTR multiByteBuffer;
+                SIZE_T multiByteLength;
 
-                if (format->Type == AnsiStringFormatType)
+                if (format->Type == MultiByteStringFormatType)
                 {
-                    ansiBuffer = format->u.AnsiString.Buffer;
-                    ansiLength = format->u.AnsiString.Length;
+                    multiByteBuffer = format->u.MultiByteString.Buffer;
+                    multiByteLength = format->u.MultiByteString.Length;
                 }
                 else
                 {
-                    ansiBuffer = format->u.AnsiStringZ;
-                    ansiLength = strlen(ansiBuffer);
+                    multiByteBuffer = format->u.MultiByteStringZ;
+                    multiByteLength = strlen(multiByteBuffer);
                 }
 
                 if (NT_SUCCESS(RtlMultiByteToUnicodeSize(
                     &bytesInUnicodeString,
-                    ansiBuffer,
-                    (ULONG)ansiLength
+                    multiByteBuffer,
+                    (ULONG)multiByteLength
                     )))
                 {
                     ENSURE_BUFFER(bytesInUnicodeString);
@@ -121,8 +117,8 @@
                         buffer,
                         bytesInUnicodeString,
                         NULL,
-                        ansiBuffer,
-                        (ULONG)ansiLength
+                        multiByteBuffer,
+                        (ULONG)multiByteLength
                         )))
                     {
                         ADVANCE_BUFFER(bytesInUnicodeString);
@@ -230,13 +226,17 @@
         usedLength += (preCount + tempCount) * sizeof(WCHAR); \
     } while (0)
 
-#ifdef _M_IX86
+#ifndef _WIN64
         case IntPtrFormatType:
             int32 = format->u.IntPtr;
+            goto CommonMaybeNegativeInt32Format;
 #endif
         case Int32FormatType:
             int32 = format->u.Int32;
 
+#ifndef _WIN64
+CommonMaybeNegativeInt32Format:
+#endif
             if ((LONG)int32 < 0)
             {
                 int32 = -(LONG)int32;
@@ -244,7 +244,7 @@
             }
 
             goto CommonInt32Format;
-#ifdef _M_IX86
+#ifndef _WIN64
         case UIntPtrFormatType:
             int32 = format->u.UIntPtr;
             goto CommonInt32Format;
@@ -254,13 +254,17 @@
 CommonInt32Format:
             COMMON_INTEGER_FORMAT(int32, format);
             break;
-#ifndef _M_IX86
+#ifdef _WIN64
         case IntPtrFormatType:
             int64 = format->u.IntPtr;
+            goto CommonMaybeNegativeInt64Format;
 #endif
         case Int64FormatType:
             int64 = format->u.Int64;
 
+#ifdef _WIN64
+CommonMaybeNegativeInt64Format:
+#endif
             if ((LONG64)int64 < 0)
             {
                 int64 = -(LONG64)int64;
@@ -268,7 +272,7 @@ CommonInt32Format:
             }
 
             goto CommonInt64Format;
-#ifndef _M_IX86
+#ifdef _WIN64
         case UIntPtrFormatType:
             int64 = format->u.UIntPtr;
             goto CommonInt64Format;
@@ -308,9 +312,6 @@ CommonInt64Format:
         else if ((Format)->Type & FormatHexadecimalForm) \
             c = 'a'; \
         \
-        if ((Format)->Type & FormatUpperCase) \
-            c -= 32; /* uppercase the format type */ \
-        \
         /* Use MS CRT routines to do the work. */ \
         \
         value = (Format)->u.Double; \
@@ -328,7 +329,7 @@ CommonInt64Format:
         /* if (((Format)->Type & FormatForceDecimalPoint) && precision == 0) */ \
              /* _forcdecpt_l(tempBufferAnsi, PhpFormatUserLocale); */ \
         if ((Format)->Type & FormatCropZeros) \
-            _cropzeros_l(temp, PhpFormatUserLocale); \
+            PhpCropZeros(temp, PhpFormatUserLocale); \
         \
         length = (ULONG)strlen(temp); \
         \
@@ -409,7 +410,7 @@ CommonInt64Format:
             \
             if (OK_BUFFER) \
             { \
-                PhZeroExtendToUnicode(decimalPoint, copyCount, buffer); \
+                PhZeroExtendToUtf16Buffer(decimalPoint, copyCount, buffer); \
                 ADVANCE_BUFFER(copyCount * sizeof(WCHAR)); \
             } \
         } \
@@ -456,7 +457,7 @@ CommonInt64Format:
             \
             if (OK_BUFFER) \
             { \
-                PhZeroExtendToUnicode((PSTR)temp, length, buffer); \
+                PhZeroExtendToUtf16Buffer((PSTR)temp, length, buffer); \
                 ADVANCE_BUFFER(length * sizeof(WCHAR)); \
             } \
         } \
@@ -493,7 +494,7 @@ CommonInt64Format:
                     maxSizeUnit = PhMaxSizeUnit;
 
                 while (
-                    s >= 1024 &&
+                    s >= 1000 &&
                     i < sizeof(PhpSizeUnitNamesCounted) / sizeof(PH_STRINGREF) &&
                     i < maxSizeUnit
                     )

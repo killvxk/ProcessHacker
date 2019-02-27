@@ -256,9 +256,9 @@ NTSTATUS EspLoadRecoveryInfo(
     }
 
     if (failureActions->lpRebootMsg && failureActions->lpRebootMsg[0] != 0)
-        PhSwapReference2(&Context->RebootMessage, PhCreateString(failureActions->lpRebootMsg));
+        PhMoveReference(&Context->RebootMessage, PhCreateString(failureActions->lpRebootMsg));
     else
-        PhSwapReference2(&Context->RebootMessage, NULL);
+        PhClearReference(&Context->RebootMessage);
 
     // Run program
 
@@ -319,7 +319,7 @@ INT_PTR CALLBACK EspServiceRecoveryDlgProc(
                 {
                     PhShowWarning(
                         hwndDlg,
-                        L"The service has %u failure actions configured, but this program only supports editing 3. "
+                        L"The service has %lu failure actions configured, but this program only supports editing 3. "
                         L"If you save the recovery information using this program, the additional failure actions will be lost.",
                         context->NumberOfActions
                         );
@@ -336,7 +336,7 @@ INT_PTR CALLBACK EspServiceRecoveryDlgProc(
                 }
 
                 PhShowWarning(hwndDlg, L"Unable to query service recovery information: %s",
-                    ((PPH_STRING)PHA_DEREFERENCE(PhGetNtMessage(status)))->Buffer);
+                    ((PPH_STRING)PhAutoDereferenceObject(PhGetNtMessage(status)))->Buffer);
             }
 
             EspFixControls(hwndDlg, context);
@@ -346,7 +346,7 @@ INT_PTR CALLBACK EspServiceRecoveryDlgProc(
         break;
     case WM_DESTROY:
         {
-            PhSwapReference2(&context->RebootMessage, NULL);
+            PhClearReference(&context->RebootMessage);
             PhFree(context);
         }
         break;
@@ -388,7 +388,7 @@ INT_PTR CALLBACK EspServiceRecoveryDlgProc(
                     fileDialog = PhCreateOpenFileDialog();
                     PhSetFileDialogFilter(fileDialog, filters, sizeof(filters) / sizeof(PH_FILETYPE_FILTER));
 
-                    fileName = PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_RUNPROGRAM);
+                    fileName = PhaGetDlgItemText(hwndDlg, IDC_RUNPROGRAM);
                     PhSetFileDialogFileName(fileDialog, fileName->Buffer);
 
                     if (PhShowFileDialog(hwndDlg, fileDialog))
@@ -433,6 +433,7 @@ INT_PTR CALLBACK EspServiceRecoveryDlgProc(
                 return TRUE;
             case PSN_APPLY:
                 {
+                    NTSTATUS status;
                     PPH_SERVICE_ITEM serviceItem = context->ServiceItem;
                     SC_HANDLE serviceHandle;
                     ULONG restartServiceAfter;
@@ -452,7 +453,7 @@ INT_PTR CALLBACK EspServiceRecoveryDlgProc(
 
                     failureActions.dwResetPeriod = GetDlgItemInt(hwndDlg, IDC_RESETFAILCOUNT, NULL, FALSE) * 60 * 60 * 24;
                     failureActions.lpRebootMsg = PhGetStringOrEmpty(context->RebootMessage);
-                    failureActions.lpCommand = PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_RUNPROGRAM)->Buffer;
+                    failureActions.lpCommand = PhaGetDlgItemText(hwndDlg, IDC_RUNPROGRAM)->Buffer;
                     failureActions.cActions = 3;
                     failureActions.lpsaActions = actions;
 
@@ -518,7 +519,50 @@ INT_PTR CALLBACK EspServiceRecoveryDlgProc(
                     }
                     else
                     {
-                        goto ErrorCase;
+                        if (GetLastError() == ERROR_ACCESS_DENIED && !PhElevated)
+                        {
+                            // Elevate using phsvc.
+                            if (PhUiConnectToPhSvc(hwndDlg, FALSE))
+                            {
+                                if (NT_SUCCESS(status = PhSvcCallChangeServiceConfig2(
+                                    serviceItem->Name->Buffer,
+                                    SERVICE_CONFIG_FAILURE_ACTIONS,
+                                    &failureActions
+                                    )))
+                                {
+                                    if (context->EnableFlagCheckBox)
+                                    {
+                                        SERVICE_FAILURE_ACTIONS_FLAG failureActionsFlag;
+
+                                        failureActionsFlag.fFailureActionsOnNonCrashFailures =
+                                            Button_GetCheck(GetDlgItem(hwndDlg, IDC_ENABLEFORERRORSTOPS)) == BST_CHECKED;
+
+                                        PhSvcCallChangeServiceConfig2(
+                                            serviceItem->Name->Buffer,
+                                            SERVICE_CONFIG_FAILURE_ACTIONS_FLAG,
+                                            &failureActionsFlag
+                                            );
+                                    }
+                                }
+
+                                PhUiDisconnectFromPhSvc();
+
+                                if (!NT_SUCCESS(status))
+                                {
+                                    SetLastError(PhNtStatusToDosError(status));
+                                    goto ErrorCase;
+                                }
+                            }
+                            else
+                            {
+                                // User cancelled elevation.
+                                SetWindowLongPtr(hwndDlg, DWLP_MSGRESULT, PSNRET_INVALID);
+                            }
+                        }
+                        else
+                        {
+                            goto ErrorCase;
+                        }
                     }
 
                     return TRUE;
@@ -527,7 +571,7 @@ ErrorCase:
                         hwndDlg,
                         MB_ICONERROR | MB_RETRYCANCEL,
                         L"Unable to change service recovery information: %s",
-                        ((PPH_STRING)PHA_DEREFERENCE(PhGetWin32Message(GetLastError())))->Buffer
+                        ((PPH_STRING)PhAutoDereferenceObject(PhGetWin32Message(GetLastError())))->Buffer
                         ) == IDRETRY)
                     {
                         SetWindowLongPtr(hwndDlg, DWLP_MSGRESULT, PSNRET_INVALID);
@@ -552,7 +596,7 @@ INT_PTR CALLBACK EspServiceRecovery2DlgProc(
     return FALSE;
 }
 
-static INT_PTR CALLBACK RestartComputerDlgProc(
+INT_PTR CALLBACK RestartComputerDlgProc(
     _In_ HWND hwndDlg,
     _In_ UINT uMsg,
     _In_ WPARAM wParam,
@@ -585,7 +629,7 @@ static INT_PTR CALLBACK RestartComputerDlgProc(
             Button_SetCheck(GetDlgItem(hwndDlg, IDC_ENABLERESTARTMESSAGE), context->RebootMessage ? BST_CHECKED : BST_UNCHECKED);
             SetDlgItemText(hwndDlg, IDC_RESTARTMESSAGE, PhGetString(context->RebootMessage));
 
-            SetFocus(GetDlgItem(hwndDlg, IDC_RESTARTCOMPAFTER));
+            SendMessage(hwndDlg, WM_NEXTDLGCTL, (WPARAM)GetDlgItem(hwndDlg, IDC_RESTARTCOMPAFTER), TRUE);
             Edit_SetSel(GetDlgItem(hwndDlg, IDC_RESTARTCOMPAFTER), 0, -1);
         }
         break;
@@ -601,9 +645,9 @@ static INT_PTR CALLBACK RestartComputerDlgProc(
                     context->RebootAfter = GetDlgItemInt(hwndDlg, IDC_RESTARTCOMPAFTER, NULL, FALSE) * 1000 * 60;
 
                     if (Button_GetCheck(GetDlgItem(hwndDlg, IDC_ENABLERESTARTMESSAGE)) == BST_CHECKED)
-                        PhSwapReference2(&context->RebootMessage, PhGetWindowText(GetDlgItem(hwndDlg, IDC_RESTARTMESSAGE)));
+                        PhMoveReference(&context->RebootMessage, PhGetWindowText(GetDlgItem(hwndDlg, IDC_RESTARTMESSAGE)));
                     else
-                        PhSwapReference2(&context->RebootMessage, NULL);
+                        PhClearReference(&context->RebootMessage);
 
                     context->Dirty = TRUE;
 

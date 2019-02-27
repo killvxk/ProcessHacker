@@ -2,7 +2,7 @@
  * Process Hacker -
  *   memory search results
  *
- * Copyright (C) 2010-2011 wj32
+ * Copyright (C) 2010-2016 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -21,9 +21,10 @@
  */
 
 #include <phapp.h>
+#include <emenu.h>
 #include <settings.h>
 #include <memsrch.h>
-#include "pcre/pcre.h"
+#include "pcre/pcre2.h"
 #include <windowsx.h>
 
 #define FILTER_CONTAINS 1
@@ -114,8 +115,8 @@ static VOID FilterResults(
 {
     PPH_STRING selectedChoice = NULL;
     PPH_LIST results;
-    pcre *expression;
-    pcre_extra *expression_extra;
+    pcre2_code *compiledExpression;
+    pcre2_match_data *matchData;
 
     results = Context->Results;
 
@@ -183,90 +184,52 @@ static VOID FilterResults(
         }
         else if (Type == FILTER_REGEX || Type == FILTER_REGEX_IGNORECASE)
         {
-            PPH_ANSI_STRING patternString;
-            char *errorString;
-            int errorOffset;
-            PCHAR ansiBuffer;
+            int errorCode;
+            PCRE2_SIZE errorOffset;
 
-            patternString = PhCreateAnsiStringFromUnicodeEx(
+            compiledExpression = pcre2_compile(
                 selectedChoice->Buffer,
-                selectedChoice->Length
-                );
-            PhaDereferenceObject(patternString);
-
-            expression = pcre_compile2(
-                patternString->Buffer,
-                (Type == FILTER_REGEX_IGNORECASE ? PCRE_CASELESS : 0) | PCRE_DOTALL,
-                NULL,
-                &errorString,
+                selectedChoice->Length / sizeof(WCHAR),
+                (Type == FILTER_REGEX_IGNORECASE ? PCRE2_CASELESS : 0) | PCRE2_DOTALL,
+                &errorCode,
                 &errorOffset,
                 NULL
                 );
 
-            if (!expression)
+            if (!compiledExpression)
             {
-                PhShowError(hwndDlg, L"Unable to compile the regular expression: \"%S\" at position %d.",
-                    errorString,
+                PhShowError(hwndDlg, L"Unable to compile the regular expression: \"%s\" at position %zu.",
+                    PhGetStringOrDefault(PhAutoDereferenceObject(PhPcre2GetErrorMessage(errorCode)), L"Unknown error"),
                     errorOffset
                     );
                 continue;
             }
 
-            expression_extra = pcre_study(expression, 0, &errorString);
+            matchData = pcre2_match_data_create_from_pattern(compiledExpression, NULL);
 
-            ansiBuffer = PhAllocatePage(PH_DISPLAY_BUFFER_COUNT + 1, NULL);
             newResults = PhCreateList(1024);
 
             for (i = 0; i < results->Count; i++)
             {
                 PPH_MEMORY_RESULT result = results->Items[i];
-                ULONG ansiLength;
-                int r;
 
-                if (!NT_SUCCESS(RtlUnicodeToMultiByteN(
-                    ansiBuffer,
-                    PH_DISPLAY_BUFFER_COUNT,
-                    &ansiLength,
+                if (pcre2_match(
+                    compiledExpression,
                     result->Display.Buffer,
-                    (ULONG)result->Display.Length
-                    )))
-                    continue;
-
-                // Guard against stack overflows.
-                __try
-                {
-                    r = pcre_exec(
-                        expression,
-                        expression_extra,
-                        ansiBuffer,
-                        ansiLength,
-                        0,
-                        0,
-                        NULL,
-                        0
-                        );
-                }
-                __except (SIMPLE_EXCEPTION_FILTER(GetExceptionCode() == STATUS_STACK_OVERFLOW))
-                {
-                    r = -1;
-
-                    if (!_resetstkoflw())
-                    {
-                        PhRaiseStatus(STATUS_STACK_OVERFLOW);
-                    }
-                }
-
-                if (r >= 0)
+                    result->Display.Length / sizeof(WCHAR),
+                    0,
+                    0,
+                    matchData,
+                    NULL
+                    ) >= 0)
                 {
                     PhReferenceMemoryResult(result);
                     PhAddItemList(newResults, result);
                 }
             }
 
-            PhFreePage(ansiBuffer);
-
-            pcre_free(expression_extra);
-            pcre_free(expression);
+            pcre2_match_data_free(matchData);
+            pcre2_code_free(compiledExpression);
         }
 
         if (newResults)
@@ -317,7 +280,7 @@ INT_PTR CALLBACK PhpMemoryResultsDlgProc(
                 if (processItem = PhReferenceProcessItem(context->ProcessId))
                 {
                     SetWindowText(hwndDlg, PhaFormatString(L"Results - %s (%u)",
-                        processItem->ProcessName->Buffer, (ULONG)processItem->ProcessId)->Buffer);
+                        processItem->ProcessName->Buffer, HandleToUlong(processItem->ProcessId))->Buffer);
                     PhDereferenceObject(processItem);
                 }
             }
@@ -425,7 +388,7 @@ INT_PTR CALLBACK PhpMemoryResultsDlgProc(
                     PhSetClipboardString(hwndDlg, &string->sr);
                     PhDereferenceObject(string);
 
-                    SetFocus(lvHandle);
+                    SendMessage(hwndDlg, WM_NEXTDLGCTL, (WPARAM)lvHandle, TRUE);
                 }
                 break;
             case IDC_SAVE:
@@ -450,7 +413,7 @@ INT_PTR CALLBACK PhpMemoryResultsDlgProc(
                         PPH_STRING string;
 
                         fileName = PhGetFileDialogFileName(fileDialog);
-                        PhaDereferenceObject(fileName);
+                        PhAutoDereferenceObject(fileName);
 
                         if (NT_SUCCESS(status = PhCreateFileStream(
                             &fileStream,
@@ -461,10 +424,11 @@ INT_PTR CALLBACK PhpMemoryResultsDlgProc(
                             0
                             )))
                         {
+                            PhWriteStringAsUtf8FileStream(fileStream, &PhUnicodeByteOrderMark);
                             PhWritePhTextHeader(fileStream);
 
                             string = PhpGetStringForSelectedResults(GetDlgItem(hwndDlg, IDC_LIST), context->Results, TRUE);
-                            PhWriteStringAsAnsiFileStreamEx(fileStream, string->Buffer, string->Length);
+                            PhWriteStringAsUtf8FileStreamEx(fileStream, string->Buffer, string->Length);
                             PhDereferenceObject(string);
 
                             PhDereferenceObject(fileStream);
@@ -479,48 +443,46 @@ INT_PTR CALLBACK PhpMemoryResultsDlgProc(
                 break;
             case IDC_FILTER:
                 {
-                    HMENU menu;
-                    HMENU subMenu;
+                    PPH_EMENU menu;
                     RECT buttonRect;
                     POINT point;
-                    UINT selectedItem;
+                    PPH_EMENU_ITEM selectedItem;
                     ULONG filterType = 0;
 
-                    menu = LoadMenu(PhInstanceHandle, MAKEINTRESOURCE(IDR_MEMFILTER));
-                    subMenu = GetSubMenu(menu, 0);
+                    menu = PhCreateEMenu();
+                    PhLoadResourceEMenuItem(menu, PhInstanceHandle, MAKEINTRESOURCE(IDR_MEMFILTER), 0);
 
                     GetClientRect(GetDlgItem(hwndDlg, IDC_FILTER), &buttonRect);
                     point.x = 0;
                     point.y = buttonRect.bottom;
 
                     ClientToScreen(GetDlgItem(hwndDlg, IDC_FILTER), &point);
-                    selectedItem = PhShowContextMenu2(
-                        hwndDlg,
-                        GetDlgItem(hwndDlg, IDC_FILTER),
-                        subMenu,
-                        point
-                        );
+                    selectedItem = PhShowEMenu(menu, hwndDlg, PH_EMENU_SHOW_LEFTRIGHT,
+                        PH_ALIGN_LEFT | PH_ALIGN_TOP, point.x, point.y);
 
-                    switch (selectedItem)
+                    if (selectedItem)
                     {
-                    case ID_FILTER_CONTAINS:
-                        filterType = FILTER_CONTAINS;
-                        break;
-                    case ID_FILTER_CONTAINS_CASEINSENSITIVE:
-                        filterType = FILTER_CONTAINS_IGNORECASE;
-                        break;
-                    case ID_FILTER_REGEX:
-                        filterType = FILTER_REGEX;
-                        break;
-                    case ID_FILTER_REGEX_CASEINSENSITIVE:
-                        filterType = FILTER_REGEX_IGNORECASE;
-                        break;
+                        switch (selectedItem->Id)
+                        {
+                        case ID_FILTER_CONTAINS:
+                            filterType = FILTER_CONTAINS;
+                            break;
+                        case ID_FILTER_CONTAINS_CASEINSENSITIVE:
+                            filterType = FILTER_CONTAINS_IGNORECASE;
+                            break;
+                        case ID_FILTER_REGEX:
+                            filterType = FILTER_REGEX;
+                            break;
+                        case ID_FILTER_REGEX_CASEINSENSITIVE:
+                            filterType = FILTER_REGEX_IGNORECASE;
+                            break;
+                        }
                     }
 
                     if (filterType != 0)
                         FilterResults(hwndDlg, context, filterType);
 
-                    DestroyMenu(menu);
+                    PhDestroyEMenu(menu);
                 }
                 break;
             }
@@ -618,6 +580,7 @@ INT_PTR CALLBACK PhpMemoryResultsDlgProc(
                                     )))
                                 {
                                     showMemoryEditor = PhAllocate(sizeof(PH_SHOWMEMORYEDITOR));
+                                    memset(showMemoryEditor, 0, sizeof(PH_SHOWMEMORYEDITOR));
                                     showMemoryEditor->ProcessId = context->ProcessId;
                                     showMemoryEditor->BaseAddress = basicInfo.BaseAddress;
                                     showMemoryEditor->RegionSize = basicInfo.RegionSize;

@@ -2,7 +2,7 @@
  * Process Hacker -
  *   thread stack viewer
  *
- * Copyright (C) 2010-2012 wj32
+ * Copyright (C) 2010-2015 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -22,6 +22,7 @@
 
 #include <phapp.h>
 #include <kphuser.h>
+#include <symprv.h>
 #include <settings.h>
 #include <phplug.h>
 
@@ -34,6 +35,7 @@ typedef struct _THREAD_STACK_CONTEXT
     HANDLE ThreadId;
     HANDLE ThreadHandle;
     HWND ListViewHandle;
+    PPH_THREAD_PROVIDER ThreadProvider;
     PPH_SYMBOL_PROVIDER SymbolProvider;
     BOOLEAN CustomWalk;
 
@@ -82,7 +84,7 @@ VOID PhShowThreadStackDialog(
     _In_ HWND ParentWindowHandle,
     _In_ HANDLE ProcessId,
     _In_ HANDLE ThreadId,
-    _In_ PPH_SYMBOL_PROVIDER SymbolProvider
+    _In_ PPH_THREAD_PROVIDER ThreadProvider
     )
 {
     NTSTATUS status;
@@ -100,11 +102,12 @@ VOID PhShowThreadStackDialog(
     memset(&threadStackContext, 0, sizeof(THREAD_STACK_CONTEXT));
     threadStackContext.ProcessId = ProcessId;
     threadStackContext.ThreadId = ThreadId;
-    threadStackContext.SymbolProvider = SymbolProvider;
+    threadStackContext.ThreadProvider = ThreadProvider;
+    threadStackContext.SymbolProvider = ThreadProvider->SymbolProvider;
 
     if (!NT_SUCCESS(status = PhOpenThread(
         &threadHandle,
-        THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME,
+        ThreadQueryAccess | THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME,
         ThreadId
         )))
     {
@@ -137,7 +140,7 @@ VOID PhShowThreadStackDialog(
         (LPARAM)&threadStackContext
         );
 
-    PhSwapReference(&threadStackContext.StatusMessage, NULL);
+    PhClearReference(&threadStackContext.StatusMessage);
     PhDereferenceObject(threadStackContext.NewList);
     PhDereferenceObject(threadStackContext.List);
 
@@ -165,7 +168,7 @@ static INT_PTR CALLBACK PhpThreadStackDlgProc(
             threadStackContext = (PTHREAD_STACK_CONTEXT)lParam;
             SetProp(hwndDlg, PhMakeContextAtom(), (HANDLE)threadStackContext);
 
-            title = PhFormatString(L"Stack - thread %u", (ULONG)threadStackContext->ThreadId);
+            title = PhFormatString(L"Stack - thread %u", HandleToUlong(threadStackContext->ThreadId));
             SetWindowText(hwndDlg, title->Buffer);
             PhDereferenceObject(title);
 
@@ -295,7 +298,7 @@ static INT_PTR CALLBACK PhpThreadStackDlgProc(
                         PhSetStateAllListViewItems(lvHandle, LVIS_SELECTED, LVIS_SELECTED);
 
                     PhCopyListView(lvHandle);
-                    SetFocus(lvHandle);
+                    SendMessage(hwndDlg, WM_NEXTDLGCTL, (WPARAM)lvHandle, TRUE);
                 }
                 break;
             }
@@ -330,6 +333,13 @@ static INT_PTR CALLBACK PhpThreadStackDlgProc(
                             stackFrame = &stackItem->StackFrame;
                             PhInitializeStringBuilder(&stringBuilder, 40);
 
+                            PhAppendFormatStringBuilder(
+                                &stringBuilder,
+                                L"Stack: 0x%Ix, Frame: 0x%Ix\n",
+                                stackFrame->StackAddress,
+                                stackFrame->FrameAddress
+                                );
+
                             // There are no params for kernel-mode stack traces.
                             if ((ULONG_PTR)stackFrame->PcAddress <= PhSystemBasicInformation.MaximumUserModeAddress)
                             {
@@ -361,7 +371,7 @@ static INT_PTR CALLBACK PhpThreadStackDlgProc(
                             }
 
                             if (stringBuilder.String->Length != 0)
-                                PhRemoveStringBuilder(&stringBuilder, stringBuilder.String->Length / 2 - 1, 1);
+                                PhRemoveEndStringBuilder(&stringBuilder, 1);
 
                             if (PhPluginsEnabled)
                             {
@@ -405,7 +415,7 @@ static VOID PhpFreeThreadStackItem(
     _In_ PTHREAD_STACK_ITEM StackItem
     )
 {
-    PhSwapReference(&StackItem->Symbol, NULL);
+    PhClearReference(&StackItem->Symbol);
     PhFree(StackItem);
 }
 
@@ -417,7 +427,7 @@ static NTSTATUS PhpRefreshThreadStack(
     ULONG i;
 
     ThreadStackContext->StopWalk = FALSE;
-    PhSwapReference2(&ThreadStackContext->StatusMessage, PhCreateString(L"Loading stack..."));
+    PhMoveReference(&ThreadStackContext->StatusMessage, PhCreateString(L"Loading stack..."));
 
     DialogBoxParam(
         PhInstanceHandle,
@@ -480,7 +490,7 @@ static BOOLEAN NTAPI PhpWalkThreadStackCallback(
         return FALSE;
 
     PhAcquireQueuedLockExclusive(&threadStackContext->StatusLock);
-    PhSwapReference2(&threadStackContext->StatusMessage,
+    PhMoveReference(&threadStackContext->StatusMessage,
         PhFormatString(L"Processing frame %u...", threadStackContext->NewList->Count));
     PhReleaseQueuedLockExclusive(&threadStackContext->StatusLock);
     PostMessage(threadStackContext->ProgressWindowHandle, WM_PH_STATUS_UPDATE, 0, 0);
@@ -493,6 +503,13 @@ static BOOLEAN NTAPI PhpWalkThreadStackCallback(
         NULL,
         NULL
         );
+
+    if (symbol &&
+        (StackFrame->Flags & PH_THREAD_STACK_FRAME_I386) &&
+        !(StackFrame->Flags & PH_THREAD_STACK_FRAME_FPO_DATA_PRESENT))
+    {
+        PhMoveReference(&symbol, PhConcatStrings2(symbol->Buffer, L" (No unwind info)"));
+    }
 
     item = PhAllocate(sizeof(THREAD_STACK_ITEM));
     item->StackFrame = *StackFrame;
@@ -526,6 +543,8 @@ static NTSTATUS PhpRefreshThreadStackThreadStart(
     CLIENT_ID clientId;
     BOOLEAN defaultWalk;
 
+    PhLoadSymbolsThreadProvider(threadStackContext->ThreadProvider);
+
     clientId.UniqueProcess = threadStackContext->ProcessId;
     clientId.UniqueThread = threadStackContext->ThreadId;
     defaultWalk = TRUE;
@@ -552,14 +571,31 @@ static NTSTATUS PhpRefreshThreadStackThreadStart(
 
     if (defaultWalk)
     {
+        PH_PLUGIN_THREAD_STACK_CONTROL control;
+
+        control.UniqueKey = threadStackContext;
+
+        if (PhPluginsEnabled)
+        {
+            control.Type = PluginThreadStackBeginDefaultWalkStack;
+            PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackThreadStackControl), &control);
+        }
+
         status = PhWalkThreadStack(
             threadStackContext->ThreadHandle,
             threadStackContext->SymbolProvider->ProcessHandle,
             &clientId,
+            threadStackContext->SymbolProvider,
             PH_WALK_I386_STACK | PH_WALK_AMD64_STACK | PH_WALK_KERNEL_STACK,
             PhpWalkThreadStackCallback,
             threadStackContext
             );
+
+        if (PhPluginsEnabled)
+        {
+            control.Type = PluginThreadStackEndDefaultWalkStack;
+            PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackThreadStackControl), &control);
+        }
     }
 
     if (threadStackContext->NewList->Count != 0)

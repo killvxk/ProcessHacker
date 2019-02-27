@@ -2,7 +2,7 @@
  * Process Hacker -
  *   string formatting
  *
- * Copyright (C) 2010-2011 wj32
+ * Copyright (C) 2010-2015 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -37,20 +37,17 @@
 
 extern ULONG PhMaxSizeUnit;
 
-#define SMALL_BUFFER_LENGTH (PHOBJ_SMALL_OBJECT_SIZE - FIELD_OFFSET(PH_STRING, Data) - sizeof(WCHAR))
+#define SMALL_BUFFER_LENGTH (PH_OBJECT_SMALL_OBJECT_SIZE - FIELD_OFFSET(PH_STRING, Data) - sizeof(WCHAR))
 #define BUFFER_SIZE 512
 
 #define PHP_FORMAT_NEGATIVE 0x1
 #define PHP_FORMAT_POSITIVE 0x2
 #define PHP_FORMAT_PAD 0x4
 
-// Internal CRT routines needed for floating-point conversion
+// Internal CRT routine needed for floating-point conversion
 
 errno_t __cdecl _cfltcvt_l(double *arg, char *buffer, size_t sizeInBytes,
     int format, int precision, int caps, _locale_t plocinfo);
-
-void __cdecl _cropzeros_l(char *_Buf, _locale_t _Locale);
-void __cdecl _forcdecpt_l(char *_Buf, _locale_t _Locale);
 
 // Keep in sync with PhSizeUnitNames
 static PH_STRINGREF PhpSizeUnitNamesCounted[7] =
@@ -69,46 +66,61 @@ static WCHAR PhpFormatDecimalSeparator = '.';
 static WCHAR PhpFormatThousandSeparator = ',';
 static _locale_t PhpFormatUserLocale = NULL;
 
-/**
- * Converts an ANSI string to a Unicode string by zero-extending
- * each byte.
- *
- * \param Input The original ANSI string.
- * \param InputLength The length of \a Input.
- * \param Output A buffer which will contain the converted string.
- */
-VOID PhZeroExtendToUnicode(
-    _In_reads_bytes_(InputLength) PSTR Input,
-    _In_ ULONG InputLength,
-    _Out_writes_bytes_(InputLength * 2) PWSTR Output
+#if (_MSC_VER >= 1900)
+
+// See Source\10.0.10150.0\ucrt\convert\cvt.cpp in SDK v10.
+errno_t __cdecl __acrt_fp_format(
+    double const* const value,
+    char*         const result_buffer,
+    size_t        const result_buffer_count,
+    char*         const scratch_buffer,
+    size_t        const scratch_buffer_count,
+    int           const format,
+    int           const precision,
+    UINT64        const options,
+    _locale_t     const locale
+    );
+
+static errno_t __cdecl _cfltcvt_l(double *arg, char *buffer, size_t sizeInBytes,
+    int format, int precision, int caps, _locale_t plocinfo)
+{
+    char scratch_buffer[_CVTBUFSIZE + 1];
+
+    if (caps & 1)
+        format -= 32; // Make uppercase
+
+    return __acrt_fp_format(arg, buffer, sizeInBytes, scratch_buffer, sizeof(scratch_buffer),
+        format, precision, 0, plocinfo);
+}
+
+#endif
+
+// From Source\10.0.10150.0\ucrt\inc\corecrt_internal_stdio_output.h in SDK v10.
+VOID PhpCropZeros(
+    _Inout_ PCHAR Buffer,
+    _In_ _locale_t Locale
     )
 {
-    ULONG inputLength;
+    CHAR decimalSeparator = (CHAR)PhpFormatDecimalSeparator;
 
-    inputLength = InputLength & -4;
+    while (*Buffer && *Buffer != decimalSeparator)
+        ++Buffer;
 
-    if (inputLength)
+    if (*Buffer++)
     {
-        do
-        {
-            Output[0] = C_1uTo2(Input[0]);
-            Output[1] = C_1uTo2(Input[1]);
-            Output[2] = C_1uTo2(Input[2]);
-            Output[3] = C_1uTo2(Input[3]);
-            Input += 4;
-            Output += 4;
-            inputLength -= 4;
-        } while (inputLength != 0);
-    }
+        while (*Buffer && *Buffer != 'e' && *Buffer != 'E')
+            ++Buffer;
 
-    switch (InputLength & 3)
-    {
-    case 3:
-        *Output++ = C_1uTo2(*Input++);
-    case 2:
-        *Output++ = C_1uTo2(*Input++);
-    case 1:
-        *Output++ = C_1uTo2(*Input++);
+        PCHAR stop = Buffer--;
+
+        while (*Buffer == '0')
+            --Buffer;
+
+        if (*Buffer == decimalSeparator)
+            --Buffer;
+
+        while ((*++Buffer = *stop++) != '\0')
+            NOTHING;
     }
 }
 

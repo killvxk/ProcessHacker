@@ -22,6 +22,7 @@
 
 #include <phapp.h>
 #include <kphuser.h>
+#include <secedit.h>
 #include <phplug.h>
 
 typedef struct _HANDLE_PROPERTIES_CONTEXT
@@ -54,15 +55,31 @@ static NTSTATUS PhpDuplicateHandleFromProcess(
         )))
         return status;
 
-    status = PhDuplicateObject(
-        processHandle,
-        context->HandleItem->Handle,
-        NtCurrentProcess(),
-        Handle,
-        DesiredAccess,
-        0,
-        0
-        );
+    if (KphIsConnected() && PhEqualString2(context->HandleItem->TypeName, L"File", TRUE))
+    {
+        status = PhCallKphDuplicateObjectWithTimeout(
+            processHandle,
+            context->HandleItem->Handle,
+            NtCurrentProcess(),
+            Handle,
+            DesiredAccess,
+            0,
+            0
+            );
+    }
+    else
+    {
+        status = PhDuplicateObject(
+            processHandle,
+            context->HandleItem->Handle,
+            NtCurrentProcess(),
+            Handle,
+            DesiredAccess,
+            0,
+            0
+            );
+    }
+
     NtClose(processHandle);
 
     return status;
@@ -203,7 +220,7 @@ VOID PhShowHandleProperties(
         propSheetHeader.nPages = objectProperties.NumberOfPages;
     }
 
-    PropertySheet(&propSheetHeader);
+    PhModalPropertySheet(&propSheetHeader);
 }
 
 INT_PTR CALLBACK PhpHandleGeneralDlgProc(

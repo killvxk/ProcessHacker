@@ -20,7 +20,6 @@
  * along with Process Hacker.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#define PH_MAIN_PRIVATE
 #include <phapp.h>
 #include <kphuser.h>
 #include <phsvc.h>
@@ -66,19 +65,16 @@ PPH_STRING PhApplicationDirectory;
 PPH_STRING PhApplicationFileName;
 PHAPPAPI HFONT PhApplicationFont;
 PPH_STRING PhCurrentUserName = NULL;
-HFONT PhIconTitleFont;
 HINSTANCE PhInstanceHandle;
 PPH_STRING PhLocalSystemName = NULL;
 BOOLEAN PhPluginsEnabled = FALSE;
-PPH_STRING PhProcDbFileName = NULL;
 PPH_STRING PhSettingsFileName = NULL;
 PH_INTEGER_PAIR PhSmallIconSize = { 16, 16 };
+PH_INTEGER_PAIR PhLargeIconSize = { 32, 32 };
 PH_STARTUP_PARAMETERS PhStartupParameters;
 
 PH_PROVIDER_THREAD PhPrimaryProviderThread;
 PH_PROVIDER_THREAD PhSecondaryProviderThread;
-
-COLORREF PhSysWindowColor;
 
 static PPH_LIST DialogList = NULL;
 static PPH_LIST FilterList = NULL;
@@ -97,6 +93,9 @@ INT WINAPI wWinMain(
 #endif
 
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+#ifndef DEBUG
+    SetErrorMode(SEM_NOOPENFILEERRORBOX | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+#endif
 
     PhInstanceHandle = (HINSTANCE)NtCurrentPeb()->ImageBaseAddress;
 
@@ -134,9 +133,7 @@ INT WINAPI wWinMain(
         PhApplicationDirectory = PhReferenceEmptyString();
 
     PhpProcessStartupParameters();
-
-    PhpInitializeSettings();
-
+    PhSettingsInitialization();
     PhpEnablePrivileges();
 
     if (PhStartupParameters.RunAsServiceMode)
@@ -144,24 +141,22 @@ INT WINAPI wWinMain(
         RtlExitUserProcess(PhRunAsServiceStart(PhStartupParameters.RunAsServiceMode));
     }
 
+    PhpInitializeSettings();
+
     // Activate a previous instance if required.
-    if (
-        PhGetIntegerSetting(L"AllowOnlyOneInstance") &&
+    if (PhGetIntegerSetting(L"AllowOnlyOneInstance") &&
         !PhStartupParameters.NewInstance &&
         !PhStartupParameters.ShowOptions &&
         !PhStartupParameters.CommandMode &&
-        !PhStartupParameters.PhSvc
-        )
+        !PhStartupParameters.PhSvc)
+    {
         PhActivatePreviousInstance();
+    }
 
-    if (PhGetIntegerSetting(L"EnableKph") && !PhStartupParameters.NoKph)
+    if (PhGetIntegerSetting(L"EnableKph") && !PhStartupParameters.NoKph && !PhIsExecutingInWow64())
         PhInitializeKph();
 
-    if (
-        PhStartupParameters.CommandMode &&
-        PhStartupParameters.CommandType &&
-        PhStartupParameters.CommandAction
-        )
+    if (PhStartupParameters.CommandMode && PhStartupParameters.CommandType && PhStartupParameters.CommandAction)
     {
         NTSTATUS status;
 
@@ -173,6 +168,55 @@ INT WINAPI wWinMain(
         }
 
         RtlExitUserProcess(status);
+    }
+
+#ifdef DEBUG
+    dbg.ClientId = NtCurrentTeb()->ClientId;
+    dbg.StartAddress = wWinMain;
+    dbg.Parameter = NULL;
+    InsertTailList(&PhDbgThreadListHead, &dbg.ListEntry);
+    TlsSetValue(PhDbgThreadDbgTlsIndex, &dbg);
+#endif
+
+    PhInitializeAutoPool(&BaseAutoPool);
+
+    PhEmInitialization();
+    PhGuiSupportInitialization();
+    PhTreeNewInitialization();
+    PhGraphControlInitialization();
+    PhHexEditInitialization();
+    PhColorBoxInitialization();
+
+    PhSmallIconSize.X = GetSystemMetrics(SM_CXSMICON);
+    PhSmallIconSize.Y = GetSystemMetrics(SM_CYSMICON);
+    PhLargeIconSize.X = GetSystemMetrics(SM_CXICON);
+    PhLargeIconSize.Y = GetSystemMetrics(SM_CYICON);
+
+    if (PhStartupParameters.ShowOptions)
+    {
+        // Elevated options dialog for changing the value of Replace Task Manager with Process Hacker.
+        PhShowOptionsDialog(PhStartupParameters.WindowHandle);
+        RtlExitUserProcess(STATUS_SUCCESS);
+    }
+
+#ifndef DEBUG
+    if (PhIsExecutingInWow64() && !PhStartupParameters.PhSvc)
+    {
+        PhShowWarning(
+            NULL,
+            L"You are attempting to run the 32-bit version of Process Hacker on 64-bit Windows. "
+            L"Most features will not work correctly.\n\n"
+            L"Please run the 64-bit version of Process Hacker instead."
+            );
+    }
+#endif
+
+    PhPluginsEnabled = PhGetIntegerSetting(L"EnablePlugins") && !PhStartupParameters.NoPlugins;
+
+    if (PhPluginsEnabled)
+    {
+        PhPluginsInitialization();
+        PhLoadPlugins();
     }
 
     if (PhStartupParameters.PhSvc)
@@ -215,41 +259,6 @@ INT WINAPI wWinMain(
             priorityClass.PriorityClass = (UCHAR)PhStartupParameters.PriorityClass;
 
         NtSetInformationProcess(NtCurrentProcess(), ProcessPriorityClass, &priorityClass, sizeof(PROCESS_PRIORITY_CLASS));
-    }
-
-#ifdef DEBUG
-    dbg.ClientId = NtCurrentTeb()->ClientId;
-    dbg.StartAddress = wWinMain;
-    dbg.Parameter = NULL;
-    InsertTailList(&PhDbgThreadListHead, &dbg.ListEntry);
-    TlsSetValue(PhDbgThreadDbgTlsIndex, &dbg);
-#endif
-
-    PhInitializeAutoPool(&BaseAutoPool);
-
-    PhEmInitialization();
-    PhGuiSupportInitialization();
-    PhTreeNewInitialization();
-    PhGraphControlInitialization();
-    PhHexEditInitialization();
-    PhColorBoxInitialization();
-
-    PhSmallIconSize.X = GetSystemMetrics(SM_CXSMICON);
-    PhSmallIconSize.Y = GetSystemMetrics(SM_CYSMICON);
-
-    if (PhStartupParameters.ShowOptions)
-    {
-        // Elevated options dialog for changing the value of Replace Task Manager with Process Hacker.
-        PhShowOptionsDialog(PhStartupParameters.WindowHandle);
-        RtlExitUserProcess(STATUS_SUCCESS);
-    }
-
-    PhPluginsEnabled = PhGetIntegerSetting(L"EnablePlugins") && !PhStartupParameters.NoPlugins;
-
-    if (PhPluginsEnabled)
-    {
-        PhPluginsInitialization();
-        PhLoadPlugins();
     }
 
     if (!PhMainWndInitialization(nCmdShow))
@@ -390,14 +399,6 @@ VOID PhUnregisterMessageLoopFilter(
         PhRemoveItemList(FilterList, indexOfFilter);
 
     PhFree(FilterEntry);
-}
-
-VOID PhApplyUpdateInterval(
-    _In_ ULONG Interval
-    )
-{
-    PhSetIntervalProviderThread(&PhPrimaryProviderThread, Interval);
-    PhSetIntervalProviderThread(&PhSecondaryProviderThread, Interval);
 }
 
 VOID PhActivatePreviousInstance(
@@ -552,8 +553,6 @@ VOID PhpInitializeSettings(
 {
     NTSTATUS status;
 
-    PhSettingsInitialization();
-
     if (!PhStartupParameters.NoSettings)
     {
         static PH_STRINGREF settingsSuffix = PH_STRINGREF_INIT(L".settings.xml");
@@ -681,6 +680,8 @@ VOID PhpInitializeSettings(
 #define PH_ARG_HELP 23
 #define PH_ARG_SELECTPID 24
 #define PH_ARG_PRIORITY 25
+#define PH_ARG_PLUGIN 26
+#define PH_ARG_SELECTTAB 27
 
 BOOLEAN NTAPI PhpCommandLineOptionCallback(
     _In_opt_ PPH_COMMAND_LINE_OPTION Option,
@@ -793,6 +794,15 @@ BOOLEAN NTAPI PhpCommandLineOptionCallback(
             else if (PhEqualString2(Value, L"l", TRUE))
                 PhStartupParameters.PriorityClass = PROCESS_PRIORITY_CLASS_IDLE;
             break;
+        case PH_ARG_PLUGIN:
+            if (!PhStartupParameters.PluginParameters)
+                PhStartupParameters.PluginParameters = PhCreateList(3);
+            PhReferenceObject(Value);
+            PhAddItemList(PhStartupParameters.PluginParameters, Value);
+            break;
+        case PH_ARG_SELECTTAB:
+            PhSwapReference(&PhStartupParameters.SelectTab, Value);
+            break;
         }
     }
     else
@@ -845,7 +855,9 @@ VOID PhpProcessStartupParameters(
         { PH_ARG_SILENT, L"s", NoArgumentType },
         { PH_ARG_HELP, L"help", NoArgumentType },
         { PH_ARG_SELECTPID, L"selectpid", MandatoryArgumentType },
-        { PH_ARG_PRIORITY, L"priority", MandatoryArgumentType }
+        { PH_ARG_PRIORITY, L"priority", MandatoryArgumentType },
+        { PH_ARG_PLUGIN, L"plugin", MandatoryArgumentType },
+        { PH_ARG_SELECTTAB, L"selecttab", MandatoryArgumentType }
     };
     PH_STRINGREF commandLine;
 
@@ -879,9 +891,11 @@ VOID PhpProcessStartupParameters(
             L"-nokph\n"
             L"-noplugins\n"
             L"-nosettings\n"
+            L"-plugin pluginname:value\n"
             L"-priority r|h|n|l\n"
             L"-s\n"
             L"-selectpid pid-to-select\n"
+            L"-selecttab name-of-tab-to-select\n"
             L"-settings filename\n"
             L"-uninstallkph\n"
             L"-v\n"

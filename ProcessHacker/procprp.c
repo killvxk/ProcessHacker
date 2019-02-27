@@ -2,7 +2,7 @@
  * Process Hacker -
  *   process properties
  *
- * Copyright (C) 2009-2013 wj32
+ * Copyright (C) 2009-2015 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -21,7 +21,7 @@
  */
 
 #include <phapp.h>
-#include <procprpp.h>
+#include <secedit.h>
 #include <kphuser.h>
 #include <settings.h>
 #include <cpysave.h>
@@ -29,6 +29,7 @@
 #include <phplug.h>
 #include <extmgri.h>
 #include <verify.h>
+#include <procprpp.h>
 #include <windowsx.h>
 
 #define SET_BUTTON_BITMAP(Id, Bitmap) \
@@ -43,27 +44,15 @@ static PWSTR ProtectedSignerStrings[] = { L"", L" (Authenticode)", L" (CodeGen)"
 static PH_STRINGREF LoadingText = PH_STRINGREF_INIT(L"Loading...");
 static PH_STRINGREF EmptyThreadsText = PH_STRINGREF_INIT(L"There are no threads to display.");
 static PH_STRINGREF EmptyModulesText = PH_STRINGREF_INIT(L"There are no modules to display.");
+static PH_STRINGREF EmptyMemoryText = PH_STRINGREF_INIT(L"There are no memory regions to display.");
 static PH_STRINGREF EmptyHandlesText = PH_STRINGREF_INIT(L"There are no handles to display.");
 
 BOOLEAN PhProcessPropInitialization(
     VOID
     )
 {
-    if (!NT_SUCCESS(PhCreateObjectType(
-        &PhpProcessPropContextType,
-        L"ProcessPropContext",
-        0,
-        PhpProcessPropContextDeleteProcedure
-        )))
-        return FALSE;
-
-    if (!NT_SUCCESS(PhCreateObjectType(
-        &PhpProcessPropPageContextType,
-        L"ProcessPropPageContext",
-        0,
-        PhpProcessPropPageContextDeleteProcedure
-        )))
-        return FALSE;
+    PhpProcessPropContextType = PhCreateObjectType(L"ProcessPropContext", 0, PhpProcessPropContextDeleteProcedure);
+    PhpProcessPropPageContextType = PhCreateObjectType(L"ProcessPropPageContext", 0, PhpProcessPropPageContextDeleteProcedure);
 
     return TRUE;
 }
@@ -76,31 +65,22 @@ PPH_PROCESS_PROPCONTEXT PhCreateProcessPropContext(
     PPH_PROCESS_PROPCONTEXT propContext;
     PROPSHEETHEADER propSheetHeader;
 
-    if (!NT_SUCCESS(PhCreateObject(
-        &propContext,
-        sizeof(PH_PROCESS_PROPCONTEXT),
-        0,
-        PhpProcessPropContextType
-        )))
-        return NULL;
-
+    propContext = PhCreateObject(sizeof(PH_PROCESS_PROPCONTEXT), PhpProcessPropContextType);
     memset(propContext, 0, sizeof(PH_PROCESS_PROPCONTEXT));
 
-    propContext->PropSheetPages =
-        PhAllocate(sizeof(HPROPSHEETPAGE) * PH_PROCESS_PROPCONTEXT_MAXPAGES);
+    propContext->PropSheetPages = PhAllocate(sizeof(HPROPSHEETPAGE) * PH_PROCESS_PROPCONTEXT_MAXPAGES);
 
     if (!PH_IS_FAKE_PROCESS_ID(ProcessItem->ProcessId))
     {
         propContext->Title = PhFormatString(
             L"%s (%u)",
             ProcessItem->ProcessName->Buffer,
-            (ULONG)ProcessItem->ProcessId
+            HandleToUlong(ProcessItem->ProcessId)
             );
     }
     else
     {
-        propContext->Title = ProcessItem->ProcessName;
-        PhReferenceObject(propContext->Title);
+        PhSetReference(&propContext->Title, ProcessItem->ProcessName);
     }
 
     memset(&propSheetHeader, 0, sizeof(PROPSHEETHEADER));
@@ -126,8 +106,7 @@ PPH_PROCESS_PROPCONTEXT PhCreateProcessPropContext(
 
     memcpy(&propContext->PropSheetHeader, &propSheetHeader, sizeof(PROPSHEETHEADER));
 
-    propContext->ProcessItem = ProcessItem;
-    PhReferenceObject(ProcessItem);
+    PhSetReference(&propContext->ProcessItem, ProcessItem);
     PhInitializeEvent(&propContext->CreatedEvent);
 
     return propContext;
@@ -422,14 +401,7 @@ PPH_PROCESS_PROPPAGECONTEXT PhCreateProcessPropPageContextEx(
 {
     PPH_PROCESS_PROPPAGECONTEXT propPageContext;
 
-    if (!NT_SUCCESS(PhCreateObject(
-        &propPageContext,
-        sizeof(PH_PROCESS_PROPPAGECONTEXT),
-        0,
-        PhpProcessPropPageContextType
-        )))
-        return NULL;
-
+    propPageContext = PhCreateObject(sizeof(PH_PROCESS_PROPPAGECONTEXT), PhpProcessPropPageContextType);
     memset(propPageContext, 0, sizeof(PH_PROCESS_PROPPAGECONTEXT));
 
     propPageContext->PropSheetPage.dwSize = sizeof(PROPSHEETPAGE);
@@ -634,7 +606,7 @@ VOID PhpUpdateProcessDep(
     HANDLE processHandle;
     ULONG depStatus;
 
-#ifdef _M_X64
+#ifdef _WIN64
     if (ProcessItem->IsWow64)
 #else
     if (TRUE)
@@ -706,7 +678,7 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
             HANDLE processHandle = NULL;
             PPH_STRING curdir = NULL;
             PROCESS_BASIC_INFORMATION basicInfo;
-#ifdef _M_X64
+#ifdef _WIN64
             PVOID peb32;
 #endif
             PPH_PROCESS_ITEM parentProcess;
@@ -721,6 +693,7 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
                 magnifier = PH_LOAD_SHARED_IMAGE(MAKEINTRESOURCE(IDB_MAGNIFIER), IMAGE_BITMAP);
                 pencil = PH_LOAD_SHARED_IMAGE(MAKEINTRESOURCE(IDB_PENCIL), IMAGE_BITMAP);
 
+                SET_BUTTON_BITMAP(IDC_INSPECT, magnifier);
                 SET_BUTTON_BITMAP(IDC_OPENFILENAME, folder);
                 SET_BUTTON_BITMAP(IDC_VIEWPARENTPROCESS, magnifier);
                 SET_BUTTON_BITMAP(IDC_EDITDEP, pencil);
@@ -745,6 +718,19 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
 
             if (!processItem->FileName)
                 EnableWindow(GetDlgItem(hwndDlg, IDC_OPENFILENAME), FALSE);
+
+            {
+                PPH_STRING inspectExecutables;
+
+                inspectExecutables = PhGetStringSetting(L"ProgramInspectExecutables");
+
+                if (!processItem->FileName || inspectExecutables->Length == 0)
+                {
+                    EnableWindow(GetDlgItem(hwndDlg, IDC_INSPECT), FALSE);
+                }
+
+                PhDereferenceObject(inspectExecutables);
+            }
 
             if (processItem->VerifyResult == VrTrusted)
             {
@@ -794,7 +780,7 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
 
                 pebOffset = PhpoCurrentDirectory;
 
-#ifdef _M_X64
+#ifdef _WIN64
                 // Tell the function to get the WOW64 current directory, because that's
                 // the one that actually gets updated.
                 if (processItem->IsWow64)
@@ -829,13 +815,13 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
 
                 startTime = processItem->CreateTime;
                 PhQuerySystemTime(&currentTime);
-                startTimeRelativeString = PHA_DEREFERENCE(PhFormatTimeSpanRelative(currentTime.QuadPart - startTime.QuadPart));
+                startTimeRelativeString = PhAutoDereferenceObject(PhFormatTimeSpanRelative(currentTime.QuadPart - startTime.QuadPart));
 
                 PhLargeIntegerToLocalSystemTime(&startTimeFields, &startTime);
                 startTimeString = PhaFormatDateTime(&startTimeFields);
 
                 SetDlgItemText(hwndDlg, IDC_STARTED,
-                    PhaFormatString(L"%s (%s)", startTimeRelativeString->Buffer, startTimeString->Buffer)->Buffer);
+                    PhaFormatString(L"%s ago (%s)", startTimeRelativeString->Buffer, startTimeString->Buffer)->Buffer);
             }
             else
             {
@@ -854,14 +840,14 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
                 clientId.UniqueThread = NULL;
 
                 SetDlgItemText(hwndDlg, IDC_PARENTPROCESS,
-                    ((PPH_STRING)PHA_DEREFERENCE(PhGetClientIdNameEx(&clientId, parentProcess->ProcessName)))->Buffer);
+                    ((PPH_STRING)PhAutoDereferenceObject(PhGetClientIdNameEx(&clientId, parentProcess->ProcessName)))->Buffer);
 
                 PhDereferenceObject(parentProcess);
             }
             else
             {
                 SetDlgItemText(hwndDlg, IDC_PARENTPROCESS,
-                    PhaFormatString(L"Non-existent process (%u)", (ULONG)processItem->ParentProcessId)->Buffer);
+                    PhaFormatString(L"Non-existent process (%u)", HandleToUlong(processItem->ParentProcessId))->Buffer);
                 EnableWindow(GetDlgItem(hwndDlg, IDC_VIEWPARENTPROCESS), FALSE);
             }
 
@@ -882,12 +868,12 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
             if (processHandle)
             {
                 PhGetProcessBasicInformation(processHandle, &basicInfo);
-#ifdef _M_X64
+#ifdef _WIN64
                 if (processItem->IsWow64)
                 {
                     PhGetProcessPeb32(processHandle, &peb32);
                     SetDlgItemText(hwndDlg, IDC_PEBADDRESS,
-                        PhaFormatString(L"0x%Ix (32-bit: 0x%x)", basicInfo.PebBaseAddress, (ULONG)peb32)->Buffer);
+                        PhaFormatString(L"0x%Ix (32-bit: 0x%x)", basicInfo.PebBaseAddress, PtrToUlong(peb32))->Buffer);
                 }
                 else
                 {
@@ -895,7 +881,7 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
 
                 SetDlgItemText(hwndDlg, IDC_PEBADDRESS,
                     PhaFormatString(L"0x%Ix", basicInfo.PebBaseAddress)->Buffer);
-#ifdef _M_X64
+#ifdef _WIN64
                 }
 #endif
             }
@@ -906,7 +892,7 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
 
             if (WINDOWS_HAS_LIMITED_ACCESS && processHandle)
             {
-                if (WindowsVersion >= WINDOWS_81)
+                if (WindowsVersion >= WINDOWS_8_1)
                 {
                     PS_PROTECTION protection;
 
@@ -1013,7 +999,7 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
                         if (policyInfo.ASLRPolicy.DisallowStrippedImages)
                             PhAppendStringBuilder2(&sb, L"Disallow stripped images, ");
                         if (sb.String->Length != 0)
-                            PhRemoveStringBuilder(&sb, sb.String->Length / 2 - 2, 2);
+                            PhRemoveEndStringBuilder(&sb, 2);
 
                         if (sb.String->Length == 0)
                             SetDlgItemText(hwndDlg, IDC_ASLR, L"Disabled");
@@ -1032,7 +1018,7 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
                 ShowWindow(GetDlgItem(hwndDlg, IDC_ASLR), SW_HIDE);
             }
 
-#ifdef _M_X64
+#ifdef _WIN64
             if (processItem->IsWow64Valid)
             {
                 if (processItem->IsWow64)
@@ -1075,6 +1061,8 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
                     dialogItem, PH_ANCHOR_LEFT | PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
                 PhAddPropPageLayoutItem(hwndDlg, GetDlgItem(hwndDlg, IDC_FILENAME),
                     dialogItem, PH_ANCHOR_LEFT | PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
+                PhAddPropPageLayoutItem(hwndDlg, GetDlgItem(hwndDlg, IDC_INSPECT),
+                    dialogItem, PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
                 PhAddPropPageLayoutItem(hwndDlg, GetDlgItem(hwndDlg, IDC_OPENFILENAME),
                     dialogItem, PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
                 PhAddPropPageLayoutItem(hwndDlg, GetDlgItem(hwndDlg, IDC_CMDLINE),
@@ -1114,6 +1102,20 @@ INT_PTR CALLBACK PhpProcessGeneralDlgProc(
 
             switch (id)
             {
+            case IDC_INSPECT:
+                {
+                    if (processItem->FileName)
+                    {
+                        PhShellExecuteUserString(
+                            hwndDlg,
+                            L"ProgramInspectExecutables",
+                            processItem->FileName->Buffer,
+                            FALSE,
+                            L"Make sure the PE Viewer executable file is present."
+                            );
+                    }
+                }
+                break;
             case IDC_OPENFILENAME:
                 {
                     if (processItem->FileName)
@@ -1334,9 +1336,9 @@ VOID PhpUpdateProcessStatistics(
 
             if (NT_SUCCESS(PhGetProcessWsCounters(Context->ProcessHandle, &wsCounters)))
             {
-                privateWs = PhaFormatSize(UInt32x32To64(wsCounters.NumberOfPrivatePages, PAGE_SIZE), -1);
-                shareableWs = PhaFormatSize(UInt32x32To64(wsCounters.NumberOfShareablePages, PAGE_SIZE), -1);
-                sharedWs = PhaFormatSize(UInt32x32To64(wsCounters.NumberOfSharedPages, PAGE_SIZE), -1);
+                privateWs = PhaFormatSize((ULONG64)wsCounters.NumberOfPrivatePages * PAGE_SIZE, -1);
+                shareableWs = PhaFormatSize((ULONG64)wsCounters.NumberOfShareablePages * PAGE_SIZE, -1);
+                sharedWs = PhaFormatSize((ULONG64)wsCounters.NumberOfSharedPages * PAGE_SIZE, -1);
                 gotWsCounters = TRUE;
             }
         }
@@ -1634,7 +1636,7 @@ INT_PTR CALLBACK PhpProcessPerformanceDlgProc(
                         {
                             HDC hdc;
 
-                            PhSwapReference2(&performanceContext->CpuGraphState.Text,
+                            PhMoveReference(&performanceContext->CpuGraphState.Text,
                                 PhFormatString(L"%.2f%%",
                                 (processItem->CpuKernelUsage + processItem->CpuUserUsage) * 100
                                 ));
@@ -1673,7 +1675,7 @@ INT_PTR CALLBACK PhpProcessPerformanceDlgProc(
                         {
                             HDC hdc;
 
-                            PhSwapReference2(&performanceContext->PrivateGraphState.Text,
+                            PhMoveReference(&performanceContext->PrivateGraphState.Text,
                                 PhConcatStrings2(
                                 L"Private Bytes: ",
                                 PhaFormatSize(processItem->VmCounters.PagefileUsage, -1)->Buffer
@@ -1711,7 +1713,7 @@ INT_PTR CALLBACK PhpProcessPerformanceDlgProc(
                             if (processItem->VmCounters.PeakPagefileUsage != 0)
                             {
                                 // Scale the data.
-                                PhxfDivideSingle2U(
+                                PhDivideSinglesBySingle(
                                     performanceContext->PrivateGraphState.Data1,
                                     (FLOAT)processItem->VmCounters.PeakPagefileUsage,
                                     drawInfo->LineDataCount
@@ -1727,7 +1729,7 @@ INT_PTR CALLBACK PhpProcessPerformanceDlgProc(
                         {
                             HDC hdc;
 
-                            PhSwapReference2(&performanceContext->IoGraphState.Text,
+                            PhMoveReference(&performanceContext->IoGraphState.Text,
                                 PhFormatString(
                                 L"R+O: %s, W: %s",
                                 PhaFormatSize(processItem->IoReadDelta.Delta + processItem->IoOtherDelta.Delta, -1)->Buffer,
@@ -1777,12 +1779,12 @@ INT_PTR CALLBACK PhpProcessPerformanceDlgProc(
                             {
                                 // Scale the data.
 
-                                PhxfDivideSingle2U(
+                                PhDivideSinglesBySingle(
                                     performanceContext->IoGraphState.Data1,
                                     max,
                                     drawInfo->LineDataCount
                                     );
-                                PhxfDivideSingle2U(
+                                PhDivideSinglesBySingle(
                                     performanceContext->IoGraphState.Data2,
                                     max,
                                     drawInfo->LineDataCount
@@ -1811,10 +1813,10 @@ INT_PTR CALLBACK PhpProcessPerformanceDlgProc(
                             cpuKernel = PhGetItemCircularBuffer_FLOAT(&processItem->CpuKernelHistory, getTooltipText->Index);
                             cpuUser = PhGetItemCircularBuffer_FLOAT(&processItem->CpuUserHistory, getTooltipText->Index);
 
-                            PhSwapReference2(&performanceContext->CpuGraphState.TooltipText, PhFormatString(
+                            PhMoveReference(&performanceContext->CpuGraphState.TooltipText, PhFormatString(
                                 L"%.2f%%\n%s",
                                 (cpuKernel + cpuUser) * 100,
-                                ((PPH_STRING)PHA_DEREFERENCE(PhGetStatisticsTimeString(processItem, getTooltipText->Index)))->Buffer
+                                ((PPH_STRING)PhAutoDereferenceObject(PhGetStatisticsTimeString(processItem, getTooltipText->Index)))->Buffer
                                 ));
                         }
 
@@ -1831,10 +1833,10 @@ INT_PTR CALLBACK PhpProcessPerformanceDlgProc(
 
                             privateBytes = PhGetItemCircularBuffer_SIZE_T(&processItem->PrivateBytesHistory, getTooltipText->Index);
 
-                            PhSwapReference2(&performanceContext->PrivateGraphState.TooltipText, PhFormatString(
+                            PhMoveReference(&performanceContext->PrivateGraphState.TooltipText, PhFormatString(
                                 L"Private Bytes: %s\n%s",
                                 PhaFormatSize(privateBytes, -1)->Buffer,
-                                ((PPH_STRING)PHA_DEREFERENCE(PhGetStatisticsTimeString(processItem, getTooltipText->Index)))->Buffer
+                                ((PPH_STRING)PhAutoDereferenceObject(PhGetStatisticsTimeString(processItem, getTooltipText->Index)))->Buffer
                                 ));
                         }
 
@@ -1855,12 +1857,12 @@ INT_PTR CALLBACK PhpProcessPerformanceDlgProc(
                             ioWrite = PhGetItemCircularBuffer_ULONG64(&processItem->IoWriteHistory, getTooltipText->Index);
                             ioOther = PhGetItemCircularBuffer_ULONG64(&processItem->IoOtherHistory, getTooltipText->Index);
 
-                            PhSwapReference2(&performanceContext->IoGraphState.TooltipText, PhFormatString(
+                            PhMoveReference(&performanceContext->IoGraphState.TooltipText, PhFormatString(
                                 L"R: %s\nW: %s\nO: %s\n%s",
                                 PhaFormatSize(ioRead, -1)->Buffer,
                                 PhaFormatSize(ioWrite, -1)->Buffer,
                                 PhaFormatSize(ioOther, -1)->Buffer,
-                                ((PPH_STRING)PHA_DEREFERENCE(PhGetStatisticsTimeString(processItem, getTooltipText->Index)))->Buffer
+                                ((PPH_STRING)PhAutoDereferenceObject(PhGetStatisticsTimeString(processItem, getTooltipText->Index)))->Buffer
                                 ));
                         }
 
@@ -1980,7 +1982,7 @@ static VOID NTAPI ThreadAddedHandler(
     PostMessage(
         threadsContext->WindowHandle,
         WM_PH_THREAD_ADDED,
-        threadsContext->Provider->RunId,
+        threadsContext->Provider->RunId == 1,
         (LPARAM)Parameter
         );
 }
@@ -2082,14 +2084,14 @@ VOID PhpInitializeThreadMenu(
             PhDestroyEMenuItem(item);
     }
 
-#ifndef _M_X64
+#ifndef _WIN64
     if (!KphIsConnected())
     {
 #endif
         // Remove Force Terminate (this is always done on x64).
         if (item = PhFindEMenuItem(Menu, 0, NULL, ID_THREAD_FORCETERMINATE))
             PhDestroyEMenuItem(item);
-#ifndef _M_X64
+#ifndef _WIN64
     }
     else
     {
@@ -2335,6 +2337,8 @@ VOID PhpUpdateThreadDetails(
         {
             if ((ULONG)threadItem->State < MaximumThreadState)
                 state = PhaCreateString(PhKThreadStateNames[(ULONG)threadItem->State]);
+            else
+                state = PhaCreateString(L"Unknown");
         }
         else
         {
@@ -2378,7 +2382,7 @@ VOID PhpUpdateThreadDetails(
                 PhInitFormatS(&format[1], L" (");
                 PhInitFormatU(&format[2], suspendCount);
                 PhInitFormatS(&format[3], L")");
-                state = PHA_DEREFERENCE(PhFormat(format, 4, 30));
+                state = PhAutoDereferenceObject(PhFormat(format, 4, 30));
             }
 
             NtClose(threadHandle);
@@ -2423,6 +2427,7 @@ VOID PhShowThreadContextMenu(
     {
         PPH_EMENU menu;
         PPH_EMENU_ITEM item;
+        PH_PLUGIN_MENU_INFORMATION menuInfo;
 
         menu = PhCreateEMenu();
         PhLoadResourceEMenuItem(menu, PhInstanceHandle, MAKEINTRESOURCE(IDR_THREAD), 0);
@@ -2433,10 +2438,7 @@ VOID PhShowThreadContextMenu(
 
         if (PhPluginsEnabled)
         {
-            PH_PLUGIN_MENU_INFORMATION menuInfo;
-
-            menuInfo.Menu = menu;
-            menuInfo.OwnerWindow = hwndDlg;
+            PhPluginInitializeMenuInfo(&menuInfo, menu, hwndDlg, 0);
             menuInfo.u.Thread.ProcessId = ProcessItem->ProcessId;
             menuInfo.u.Thread.Threads = threads;
             menuInfo.u.Thread.NumberOfThreads = numberOfThreads;
@@ -2460,7 +2462,7 @@ VOID PhShowThreadContextMenu(
             handled = PhHandleCopyCellEMenuItem(item);
 
             if (!handled && PhPluginsEnabled)
-                handled = PhPluginTriggerEMenuItem(hwndDlg, item);
+                handled = PhPluginTriggerEMenuItem(&menuInfo, item);
 
             if (!handled)
                 SendMessage(hwndDlg, WM_COMMAND, item->Id, 0);
@@ -2542,10 +2544,9 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
             threadsContext->WindowHandle = hwndDlg;
 
             // Initialize the list.
-            threadsContext->ListContext.TreeNewHandle = GetDlgItem(hwndDlg, IDC_LIST);
-            tnHandle = threadsContext->ListContext.TreeNewHandle;
+            tnHandle = GetDlgItem(hwndDlg, IDC_LIST);
             BringWindowToTop(tnHandle);
-            PhInitializeThreadList(hwndDlg, tnHandle, processItem, &threadsContext->ListContext);
+            PhInitializeThreadList(hwndDlg, tnHandle, &threadsContext->ListContext);
             TreeNew_SetEmptyText(tnHandle, &EmptyThreadsText, 0);
             threadsContext->NeedsRedraw = FALSE;
 
@@ -2633,6 +2634,7 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
                 &threadsContext->LoadingStateChangedEventRegistration
                 );
             PhUnregisterThreadProvider(threadsContext->Provider, &threadsContext->ProviderRegistration);
+            PhSetTerminatingThreadProvider(threadsContext->Provider);
             PhDereferenceObject(threadsContext->Provider);
 
             if (PhPluginsEnabled)
@@ -2716,14 +2718,14 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
 
                     if (threadItem)
                     {
-                        PhReferenceObject(threadsContext->Provider->SymbolProvider);
+                        PhReferenceObject(threadsContext->Provider);
                         PhShowThreadStackDialog(
                             hwndDlg,
                             threadsContext->Provider->ProcessId,
                             threadItem->ThreadId,
-                            threadsContext->Provider->SymbolProvider
+                            threadsContext->Provider
                             );
-                        PhDereferenceObject(threadsContext->Provider->SymbolProvider);
+                        PhDereferenceObject(threadsContext->Provider);
                     }
                 }
                 break;
@@ -2821,7 +2823,7 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
                         {
                             PhEditSecurity(
                                 hwndDlg,
-                                PhaFormatString(L"Thread %u", (ULONG)threadItem->ThreadId)->Buffer,
+                                PhaFormatString(L"Thread %u", HandleToUlong(threadItem->ThreadId))->Buffer,
                                 PhStdGetObjectSecurity,
                                 PhStdSetObjectSecurity,
                                 &stdObjectSecurity,
@@ -3033,7 +3035,7 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
         break;
     case WM_PH_THREAD_ADDED:
         {
-            ULONG runId = (ULONG)wParam;
+            BOOLEAN firstRun = (BOOLEAN)wParam;
             PPH_THREAD_ITEM threadItem = (PPH_THREAD_ITEM)lParam;
 
             if (!threadsContext->NeedsRedraw)
@@ -3043,7 +3045,7 @@ INT_PTR CALLBACK PhpProcessThreadsDlgProc(
                 threadsContext->NeedsRedraw = TRUE;
             }
 
-            PhAddThreadNode(&threadsContext->ListContext, threadItem, runId);
+            PhAddThreadNode(&threadsContext->ListContext, threadItem, firstRun);
             PhDereferenceObject(threadItem);
         }
         break;
@@ -3306,6 +3308,7 @@ VOID PhShowModuleContextMenu(
     {
         PPH_EMENU menu;
         PPH_EMENU_ITEM item;
+        PH_PLUGIN_MENU_INFORMATION menuInfo;
 
         menu = PhCreateEMenu();
         PhLoadResourceEMenuItem(menu, PhInstanceHandle, MAKEINTRESOURCE(IDR_MODULE), 0);
@@ -3316,10 +3319,7 @@ VOID PhShowModuleContextMenu(
 
         if (PhPluginsEnabled)
         {
-            PH_PLUGIN_MENU_INFORMATION menuInfo;
-
-            menuInfo.Menu = menu;
-            menuInfo.OwnerWindow = hwndDlg;
+            PhPluginInitializeMenuInfo(&menuInfo, menu, hwndDlg, 0);
             menuInfo.u.Module.ProcessId = ProcessItem->ProcessId;
             menuInfo.u.Module.Modules = modules;
             menuInfo.u.Module.NumberOfModules = numberOfModules;
@@ -3343,7 +3343,7 @@ VOID PhShowModuleContextMenu(
             handled = PhHandleCopyCellEMenuItem(item);
 
             if (!handled && PhPluginsEnabled)
-                handled = PhPluginTriggerEMenuItem(hwndDlg, item);
+                handled = PhPluginTriggerEMenuItem(&menuInfo, item);
 
             if (!handled)
                 SendMessage(hwndDlg, WM_COMMAND, item->Id, 0);
@@ -3426,10 +3426,9 @@ INT_PTR CALLBACK PhpProcessModulesDlgProc(
             modulesContext->WindowHandle = hwndDlg;
 
             // Initialize the list.
-            modulesContext->ListContext.TreeNewHandle = GetDlgItem(hwndDlg, IDC_LIST);
-            tnHandle = modulesContext->ListContext.TreeNewHandle;
+            tnHandle = GetDlgItem(hwndDlg, IDC_LIST);
             BringWindowToTop(tnHandle);
-            PhInitializeModuleList(hwndDlg, tnHandle, processItem, &modulesContext->ListContext);
+            PhInitializeModuleList(hwndDlg, tnHandle, &modulesContext->ListContext);
             TreeNew_SetEmptyText(tnHandle, &LoadingText, 0);
             modulesContext->NeedsRedraw = FALSE;
             modulesContext->LastRunStatus = -1;
@@ -3488,7 +3487,7 @@ INT_PTR CALLBACK PhpProcessModulesDlgProc(
             PhSaveSettingsModuleList(&modulesContext->ListContext);
             PhDeleteModuleList(&modulesContext->ListContext);
 
-            PhSwapReference(&modulesContext->ErrorMessage, NULL);
+            PhClearReference(&modulesContext->ErrorMessage);
             PhFree(modulesContext);
 
             PhpPropPageDlgProcDestroy(hwndDlg);
@@ -3671,8 +3670,8 @@ INT_PTR CALLBACK PhpProcessModulesDlgProc(
                 else
                 {
                     message = PhGetStatusMessage(status, 0);
-                    PhSwapReference2(&modulesContext->ErrorMessage, PhFormatString(L"Unable to query module information:\n%s", PhGetStringOrDefault(message, L"Unknown error.")));
-                    PhSwapReference(&message, NULL);
+                    PhMoveReference(&modulesContext->ErrorMessage, PhFormatString(L"Unable to query module information:\n%s", PhGetStringOrDefault(message, L"Unknown error.")));
+                    PhClearReference(&message);
                     TreeNew_SetEmptyText(tnHandle, &modulesContext->ErrorMessage->sr, 0);
                 }
 
@@ -3684,6 +3683,11 @@ INT_PTR CALLBACK PhpProcessModulesDlgProc(
                 TreeNew_SetRedraw(tnHandle, TRUE);
                 modulesContext->NeedsRedraw = FALSE;
             }
+        }
+        break;
+    case WM_CTLCOLORDLG:
+        {
+            return (INT_PTR)GetSysColorBrush(COLOR_WINDOW);
         }
         break;
     }
@@ -3698,159 +3702,153 @@ VOID PhpRefreshProcessMemoryList(
 {
     PPH_MEMORY_CONTEXT memoryContext = PropPageContext->Context;
 
-    ExtendedListView_SetRedraw(memoryContext->ListViewHandle, FALSE);
-
-    // Get rid of existing memory items.
-    PhDereferenceObjects(memoryContext->MemoryList->Items, memoryContext->MemoryList->Count);
-    PhClearList(memoryContext->MemoryList);
-    ListView_DeleteAllItems(memoryContext->ListViewHandle);
-
-    PhMemoryProviderUpdate(&memoryContext->Provider);
-    ExtendedListView_SortItems(memoryContext->ListViewHandle);
-    ExtendedListView_SetRedraw(memoryContext->ListViewHandle, TRUE);
-}
-
-BOOLEAN NTAPI PhpProcessMemoryCallback(
-    _In_ PPH_MEMORY_PROVIDER Provider,
-    _In_ _Assume_refs_(1) PPH_MEMORY_ITEM MemoryItem
-    )
-{
-    PPH_PROCESS_PROPPAGECONTEXT propPageContext = Provider->Context;
-    PPH_MEMORY_CONTEXT memoryContext = propPageContext->Context;
-    INT lvItemIndex;
-    PPH_STRING string;
-    PWSTR name;
-    WCHAR protectionString[17];
-
-    PhAddItemList(memoryContext->MemoryList, MemoryItem);
-
-    // Name
-
-    string = NULL;
-
-    if (MemoryItem->Name)
+    if (memoryContext->MemoryItemListValid)
     {
-        string = PhConcatStrings(
-            6,
-            MemoryItem->Name->Buffer,
-            L": ",
-            PhGetMemoryTypeString(MemoryItem->Flags),
-            L" (",
-            PhGetMemoryStateString(MemoryItem->Flags),
-            L")"
-            );
-        name = string->Buffer;
+        PhDeleteMemoryItemList(&memoryContext->MemoryItemList);
+        memoryContext->MemoryItemListValid = FALSE;
     }
-    else if (MemoryItem->Flags & MEM_FREE)
+
+    memoryContext->LastRunStatus = PhQueryMemoryItemList(
+        memoryContext->ProcessId,
+        PH_QUERY_MEMORY_REGION_TYPE | PH_QUERY_MEMORY_WS_COUNTERS,
+        &memoryContext->MemoryItemList
+        );
+
+    if (NT_SUCCESS(memoryContext->LastRunStatus))
     {
-        name = L"Free";
+        if (PhPluginsEnabled)
+        {
+            PH_PLUGIN_MEMORY_ITEM_LIST_CONTROL control;
+
+            control.Type = PluginMemoryItemListInitialized;
+            control.u.Initialized.List = &memoryContext->MemoryItemList;
+
+            PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackMemoryItemListControl), &control);
+        }
+
+        memoryContext->MemoryItemListValid = TRUE;
+        TreeNew_SetEmptyText(memoryContext->ListContext.TreeNewHandle, &EmptyMemoryText, 0);
+        PhReplaceMemoryList(&memoryContext->ListContext, &memoryContext->MemoryItemList);
     }
     else
     {
-        string = PhConcatStrings(
-            4,
-            PhGetMemoryTypeString(MemoryItem->Flags),
-            L" (",
-            PhGetMemoryStateString(MemoryItem->Flags),
-            L")"
-            );
-        name = string->Buffer;
+        PPH_STRING message;
+
+        message = PhGetStatusMessage(memoryContext->LastRunStatus, 0);
+        PhMoveReference(&memoryContext->ErrorMessage, PhFormatString(L"Unable to query memory information:\n%s", PhGetStringOrDefault(message, L"Unknown error.")));
+        PhClearReference(&message);
+        TreeNew_SetEmptyText(memoryContext->ListContext.TreeNewHandle, &memoryContext->ErrorMessage->sr, 0);
+
+        PhReplaceMemoryList(&memoryContext->ListContext, NULL);
     }
-
-    lvItemIndex = PhAddListViewItem(memoryContext->ListViewHandle, MAXINT, name, MemoryItem);
-
-    if (string)
-        PhDereferenceObject(string);
-
-    // Base address
-    PhSetListViewSubItem(memoryContext->ListViewHandle, lvItemIndex, 1, MemoryItem->BaseAddressString);
-
-    // Size
-    string = PhFormatSize(MemoryItem->Size, -1);
-    PhSetListViewSubItem(memoryContext->ListViewHandle, lvItemIndex, 2, string->Buffer);
-    PhDereferenceObject(string);
-
-    // Protection
-    PhGetMemoryProtectionString(MemoryItem->Protection, protectionString);
-    PhSetListViewSubItem(memoryContext->ListViewHandle, lvItemIndex, 3, protectionString);
-
-    return TRUE;
-}
-
-VOID PhpUpdateMemoryItemInListView(
-    _In_ HANDLE ListViewHandle,
-    _In_ PPH_MEMORY_ITEM MemoryItem
-    )
-{
-    INT lvItemIndex;
-
-    lvItemIndex = PhFindListViewItemByParam(ListViewHandle, -1, MemoryItem);
-
-    if (lvItemIndex != -1)
-    {
-        WCHAR protectionString[17];
-
-        PhGetMemoryProtectionString(MemoryItem->Protection, protectionString);
-        PhSetListViewSubItem(ListViewHandle, lvItemIndex, 3, protectionString);
-    }
-}
-
-INT NTAPI PhpMemoryAddressCompareFunction(
-    _In_ PVOID Item1,
-    _In_ PVOID Item2,
-    _In_opt_ PVOID Context
-    )
-{
-    PPH_MEMORY_ITEM item1 = Item1;
-    PPH_MEMORY_ITEM item2 = Item2;
-
-    return uintptrcmp((ULONG_PTR)item1->BaseAddress, (ULONG_PTR)item2->BaseAddress);
-}
-
-INT NTAPI PhpMemorySizeCompareFunction(
-    _In_ PVOID Item1,
-    _In_ PVOID Item2,
-    _In_opt_ PVOID Context
-    )
-{
-    PPH_MEMORY_ITEM item1 = Item1;
-    PPH_MEMORY_ITEM item2 = Item2;
-
-    return uintptrcmp(item1->Size, item2->Size);
 }
 
 VOID PhpInitializeMemoryMenu(
     _In_ PPH_EMENU Menu,
     _In_ HANDLE ProcessId,
-    _In_ PPH_MEMORY_ITEM *MemoryItems,
-    _In_ ULONG NumberOfMemoryItems
+    _In_ PPH_MEMORY_NODE *MemoryNodes,
+    _In_ ULONG NumberOfMemoryNodes
     )
 {
-    if (NumberOfMemoryItems == 0)
+    if (NumberOfMemoryNodes == 0)
     {
         PhSetFlagsAllEMenuItems(Menu, PH_EMENU_DISABLED, PH_EMENU_DISABLED);
     }
-    else if (NumberOfMemoryItems == 1)
+    else if (NumberOfMemoryNodes == 1 && !MemoryNodes[0]->IsAllocationBase)
     {
-        if (MemoryItems[0]->Flags & MEM_FREE)
+        if (MemoryNodes[0]->MemoryItem->State & MEM_FREE)
         {
             PhEnableEMenuItem(Menu, ID_MEMORY_CHANGEPROTECTION, FALSE);
             PhEnableEMenuItem(Menu, ID_MEMORY_FREE, FALSE);
             PhEnableEMenuItem(Menu, ID_MEMORY_DECOMMIT, FALSE);
         }
-        else if (MemoryItems[0]->Flags & (MEM_MAPPED | MEM_IMAGE))
+        else if (MemoryNodes[0]->MemoryItem->Type & (MEM_MAPPED | MEM_IMAGE))
         {
             PhEnableEMenuItem(Menu, ID_MEMORY_DECOMMIT, FALSE);
         }
     }
     else
     {
+        ULONG i;
+        ULONG numberOfAllocationBase = 0;
+
         PhSetFlagsAllEMenuItems(Menu, PH_EMENU_DISABLED, PH_EMENU_DISABLED);
-        PhEnableEMenuItem(Menu, ID_MEMORY_SAVE, TRUE);
         PhEnableEMenuItem(Menu, ID_MEMORY_COPY, TRUE);
+
+        for (i = 0; i < NumberOfMemoryNodes; i++)
+        {
+            if (MemoryNodes[i]->IsAllocationBase)
+                numberOfAllocationBase++;
+        }
+
+        if (numberOfAllocationBase == 0 || numberOfAllocationBase == NumberOfMemoryNodes)
+            PhEnableEMenuItem(Menu, ID_MEMORY_SAVE, TRUE);
     }
 
     PhEnableEMenuItem(Menu, ID_MEMORY_READWRITEADDRESS, TRUE);
+}
+
+VOID PhShowMemoryContextMenu(
+    _In_ HWND hwndDlg,
+    _In_ PPH_PROCESS_ITEM ProcessItem,
+    _In_ PPH_MEMORY_CONTEXT Context,
+    _In_ PPH_TREENEW_CONTEXT_MENU ContextMenu
+    )
+{
+    PPH_MEMORY_NODE *memoryNodes;
+    ULONG numberOfMemoryNodes;
+
+    PhGetSelectedMemoryNodes(&Context->ListContext, &memoryNodes, &numberOfMemoryNodes);
+
+    //if (numberOfMemoryNodes != 0)
+    {
+        PPH_EMENU menu;
+        PPH_EMENU_ITEM item;
+        PH_PLUGIN_MENU_INFORMATION menuInfo;
+
+        menu = PhCreateEMenu();
+        PhLoadResourceEMenuItem(menu, PhInstanceHandle, MAKEINTRESOURCE(IDR_MEMORY), 0);
+        PhSetFlagsEMenuItem(menu, ID_MEMORY_READWRITEMEMORY, PH_EMENU_DEFAULT, PH_EMENU_DEFAULT);
+
+        PhpInitializeMemoryMenu(menu, ProcessItem->ProcessId, memoryNodes, numberOfMemoryNodes);
+        PhInsertCopyCellEMenuItem(menu, ID_MEMORY_COPY, Context->ListContext.TreeNewHandle, ContextMenu->Column);
+
+        if (PhPluginsEnabled)
+        {
+            PhPluginInitializeMenuInfo(&menuInfo, menu, hwndDlg, 0);
+            menuInfo.u.Memory.ProcessId = ProcessItem->ProcessId;
+            menuInfo.u.Memory.MemoryNodes = memoryNodes;
+            menuInfo.u.Memory.NumberOfMemoryNodes = numberOfMemoryNodes;
+
+            PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackMemoryMenuInitializing), &menuInfo);
+        }
+
+        item = PhShowEMenu(
+            menu,
+            hwndDlg,
+            PH_EMENU_SHOW_LEFTRIGHT,
+            PH_ALIGN_LEFT | PH_ALIGN_TOP,
+            ContextMenu->Location.x,
+            ContextMenu->Location.y
+            );
+
+        if (item)
+        {
+            BOOLEAN handled = FALSE;
+
+            handled = PhHandleCopyCellEMenuItem(item);
+
+            if (!handled && PhPluginsEnabled)
+                handled = PhPluginTriggerEMenuItem(&menuInfo, item);
+
+            if (!handled)
+                SendMessage(hwndDlg, WM_COMMAND, item->Id, 0);
+        }
+
+        PhDestroyEMenu(menu);
+    }
+
+    PhFree(memoryNodes);
 }
 
 INT_PTR CALLBACK PhpProcessMemoryDlgProc(
@@ -3863,59 +3861,80 @@ INT_PTR CALLBACK PhpProcessMemoryDlgProc(
     LPPROPSHEETPAGE propSheetPage;
     PPH_PROCESS_PROPPAGECONTEXT propPageContext;
     PPH_PROCESS_ITEM processItem;
-    HWND lvHandle;
+    PPH_MEMORY_CONTEXT memoryContext;
+    HWND tnHandle;
 
-    if (!PhpPropPageDlgProcHeader(hwndDlg, uMsg, lParam,
+    if (PhpPropPageDlgProcHeader(hwndDlg, uMsg, lParam,
         &propSheetPage, &propPageContext, &processItem))
-        return FALSE;
+    {
+        memoryContext = (PPH_MEMORY_CONTEXT)propPageContext->Context;
 
-    lvHandle = GetDlgItem(hwndDlg, IDC_LIST);
+        if (memoryContext)
+            tnHandle = memoryContext->ListContext.TreeNewHandle;
+    }
+    else
+    {
+        return FALSE;
+    }
 
     switch (uMsg)
     {
     case WM_INITDIALOG:
         {
-            PPH_MEMORY_CONTEXT memoryContext;
-
             memoryContext = propPageContext->Context =
-                PhAllocate(sizeof(PH_MEMORY_CONTEXT));
-            PhInitializeMemoryProvider(
-                &memoryContext->Provider,
-                processItem->ProcessId,
-                PhpProcessMemoryCallback,
-                propPageContext
-                );
-            memoryContext->MemoryList = PhCreateList(40);
-            memoryContext->ListViewHandle = lvHandle;
+                PhAllocate(PhEmGetObjectSize(EmMemoryContextType, sizeof(PH_MEMORY_CONTEXT)));
+            memset(memoryContext, 0, sizeof(PH_MEMORY_CONTEXT));
+            memoryContext->ProcessId = processItem->ProcessId;
 
-            PhSetListViewStyle(lvHandle, TRUE, TRUE);
-            PhSetControlTheme(lvHandle, L"explorer");
-            PhAddListViewColumn(lvHandle, 0, 0, 0, LVCFMT_LEFT, 140, L"Name");
-            PhAddListViewColumn(lvHandle, 1, 1, 1, LVCFMT_LEFT, 100, L"Address");
-            PhAddListViewColumn(lvHandle, 2, 2, 2, LVCFMT_LEFT, 60, L"Size");
-            PhAddListViewColumn(lvHandle, 3, 3, 3, LVCFMT_LEFT, 60, L"Protection");
+            // Initialize the list.
+            tnHandle = GetDlgItem(hwndDlg, IDC_LIST);
+            BringWindowToTop(tnHandle);
+            PhInitializeMemoryList(hwndDlg, tnHandle, &memoryContext->ListContext);
+            TreeNew_SetEmptyText(tnHandle, &LoadingText, 0);
+            memoryContext->LastRunStatus = -1;
+            memoryContext->ErrorMessage = NULL;
 
-            PhSetExtendedListView(lvHandle);
-            ExtendedListView_SetCompareFunction(lvHandle, 1, PhpMemoryAddressCompareFunction);
-            ExtendedListView_SetCompareFunction(lvHandle, 2, PhpMemorySizeCompareFunction);
-            PhLoadListViewColumnsFromSetting(L"MemoryListViewColumns", lvHandle);
-            ExtendedListView_SetSort(lvHandle, 1, AscendingSortOrder);
+            PhEmCallObjectOperation(EmMemoryContextType, memoryContext, EmObjectCreate);
+
+            if (PhPluginsEnabled)
+            {
+                PH_PLUGIN_TREENEW_INFORMATION treeNewInfo;
+
+                treeNewInfo.TreeNewHandle = tnHandle;
+                treeNewInfo.CmData = &memoryContext->ListContext.Cm;
+                treeNewInfo.SystemContext = memoryContext;
+                PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackMemoryTreeNewInitializing), &treeNewInfo);
+            }
+
+            PhLoadSettingsMemoryList(&memoryContext->ListContext);
+            PhSetOptionsMemoryList(&memoryContext->ListContext, TRUE);
+            Button_SetCheck(GetDlgItem(hwndDlg, IDC_HIDEFREEREGIONS),
+                memoryContext->ListContext.HideFreeRegions ? BST_CHECKED : BST_UNCHECKED);
 
             PhpRefreshProcessMemoryList(hwndDlg, propPageContext);
         }
         break;
     case WM_DESTROY:
         {
-            PPH_MEMORY_CONTEXT memoryContext;
+            PhEmCallObjectOperation(EmMemoryContextType, memoryContext, EmObjectDelete);
 
-            memoryContext = propPageContext->Context;
+            if (PhPluginsEnabled)
+            {
+                PH_PLUGIN_TREENEW_INFORMATION treeNewInfo;
 
-            PhDereferenceObjects(memoryContext->MemoryList->Items, memoryContext->MemoryList->Count);
-            PhDereferenceObject(memoryContext->MemoryList);
-            PhDeleteMemoryProvider(&memoryContext->Provider);
+                treeNewInfo.TreeNewHandle = tnHandle;
+                treeNewInfo.CmData = &memoryContext->ListContext.Cm;
+                PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackMemoryTreeNewUninitializing), &treeNewInfo);
+            }
+
+            PhSaveSettingsMemoryList(&memoryContext->ListContext);
+            PhDeleteMemoryList(&memoryContext->ListContext);
+
+            if (memoryContext->MemoryItemListValid)
+                PhDeleteMemoryItemList(&memoryContext->MemoryItemList);
+
+            PhClearReference(&memoryContext->ErrorMessage);
             PhFree(memoryContext);
-
-            PhSaveListViewColumnsToSetting(L"MemoryListViewColumns", lvHandle);
 
             PhpPropPageDlgProcDestroy(hwndDlg);
         }
@@ -3928,9 +3947,11 @@ INT_PTR CALLBACK PhpProcessMemoryDlgProc(
 
                 dialogItem = PhAddPropPageLayoutItem(hwndDlg, hwndDlg,
                     PH_PROP_PAGE_TAB_CONTROL_PARENT, PH_ANCHOR_ALL);
+                PhAddPropPageLayoutItem(hwndDlg, GetDlgItem(hwndDlg, IDC_STRINGS),
+                    dialogItem, PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
                 PhAddPropPageLayoutItem(hwndDlg, GetDlgItem(hwndDlg, IDC_REFRESH),
                     dialogItem, PH_ANCHOR_TOP | PH_ANCHOR_RIGHT);
-                PhAddPropPageLayoutItem(hwndDlg, lvHandle,
+                PhAddPropPageLayoutItem(hwndDlg, memoryContext->ListContext.TreeNewHandle,
                     dialogItem, PH_ANCHOR_ALL);
 
                 PhDoPropPageLayout(hwndDlg);
@@ -3943,19 +3964,25 @@ INT_PTR CALLBACK PhpProcessMemoryDlgProc(
         {
             switch (LOWORD(wParam))
             {
+            case ID_SHOWCONTEXTMENU:
+                {
+                    PhShowMemoryContextMenu(hwndDlg, processItem, memoryContext, (PPH_TREENEW_CONTEXT_MENU)lParam);
+                }
+                break;
             case ID_MEMORY_READWRITEMEMORY:
                 {
-                    PPH_MEMORY_ITEM memoryItem = PhGetSelectedListViewItemParam(lvHandle);
+                    PPH_MEMORY_NODE memoryNode = PhGetSelectedMemoryNode(&memoryContext->ListContext);
 
-                    if (memoryItem)
+                    if (memoryNode && !memoryNode->IsAllocationBase)
                     {
-                        if (memoryItem->Flags & MEM_COMMIT)
+                        if (memoryNode->MemoryItem->State & MEM_COMMIT)
                         {
                             PPH_SHOWMEMORYEDITOR showMemoryEditor = PhAllocate(sizeof(PH_SHOWMEMORYEDITOR));
 
+                            memset(showMemoryEditor, 0, sizeof(PH_SHOWMEMORYEDITOR));
                             showMemoryEditor->ProcessId = processItem->ProcessId;
-                            showMemoryEditor->BaseAddress = memoryItem->BaseAddress;
-                            showMemoryEditor->RegionSize = memoryItem->Size;
+                            showMemoryEditor->BaseAddress = memoryNode->MemoryItem->BaseAddress;
+                            showMemoryEditor->RegionSize = memoryNode->MemoryItem->RegionSize;
                             showMemoryEditor->SelectOffset = -1;
                             showMemoryEditor->SelectLength = 0;
                             ProcessHacker_ShowMemoryEditor(PhMainWndHandle, showMemoryEditor);
@@ -3971,8 +3998,8 @@ INT_PTR CALLBACK PhpProcessMemoryDlgProc(
                 {
                     NTSTATUS status;
                     HANDLE processHandle;
-                    PPH_MEMORY_ITEM *memoryItems;
-                    ULONG numberOfMemoryItems;
+                    PPH_MEMORY_NODE *memoryNodes;
+                    ULONG numberOfMemoryNodes;
 
                     if (!NT_SUCCESS(status = PhOpenProcess(
                         &processHandle,
@@ -3984,9 +4011,9 @@ INT_PTR CALLBACK PhpProcessMemoryDlgProc(
                         break;
                     }
 
-                    PhGetSelectedListViewItemParams(lvHandle, &memoryItems, &numberOfMemoryItems);
+                    PhGetSelectedMemoryNodes(&memoryContext->ListContext, &memoryNodes, &numberOfMemoryNodes);
 
-                    if (numberOfMemoryItems != 0)
+                    if (numberOfMemoryNodes != 0)
                     {
                         static PH_FILETYPE_FILTER filters[] =
                         {
@@ -4009,7 +4036,7 @@ INT_PTR CALLBACK PhpProcessMemoryDlgProc(
                             ULONG_PTR offset;
 
                             fileName = PhGetFileDialogFileName(fileDialog);
-                            PhaDereferenceObject(fileName);
+                            PhAutoDereferenceObject(fileName);
 
                             if (NT_SUCCESS(status = PhCreateFileStream(
                                 &fileStream,
@@ -4024,14 +4051,15 @@ INT_PTR CALLBACK PhpProcessMemoryDlgProc(
 
                                 // Go through each selected memory item and append the region contents
                                 // to the file.
-                                for (i = 0; i < numberOfMemoryItems; i++)
+                                for (i = 0; i < numberOfMemoryNodes; i++)
                                 {
-                                    PPH_MEMORY_ITEM memoryItem = memoryItems[i];
+                                    PPH_MEMORY_NODE memoryNode = memoryNodes[i];
+                                    PPH_MEMORY_ITEM memoryItem = memoryNode->MemoryItem;
 
-                                    if (!(memoryItem->Flags & MEM_COMMIT))
+                                    if (!memoryNode->IsAllocationBase && !(memoryItem->State & MEM_COMMIT))
                                         continue;
 
-                                    for (offset = 0; offset < memoryItem->Size; offset += PAGE_SIZE)
+                                    for (offset = 0; offset < memoryItem->RegionSize; offset += PAGE_SIZE)
                                     {
                                         if (NT_SUCCESS(PhReadVirtualMemory(
                                             processHandle,
@@ -4058,54 +4086,56 @@ INT_PTR CALLBACK PhpProcessMemoryDlgProc(
                         PhFreeFileDialog(fileDialog);
                     }
 
-                    PhFree(memoryItems);
+                    PhFree(memoryNodes);
                     NtClose(processHandle);
                 }
                 break;
             case ID_MEMORY_CHANGEPROTECTION:
                 {
-                    PPH_MEMORY_ITEM memoryItem = PhGetSelectedListViewItemParam(lvHandle);
+                    PPH_MEMORY_NODE memoryNode = PhGetSelectedMemoryNode(&memoryContext->ListContext);
 
-                    if (memoryItem)
+                    if (memoryNode)
                     {
-                        PhReferenceObject(memoryItem);
+                        PhReferenceObject(memoryNode->MemoryItem);
 
-                        PhShowMemoryProtectDialog(hwndDlg, processItem, memoryItem);
-                        PhpUpdateMemoryItemInListView(lvHandle, memoryItem);
+                        PhShowMemoryProtectDialog(hwndDlg, processItem, memoryNode->MemoryItem);
+                        PhUpdateMemoryNode(&memoryContext->ListContext, memoryNode);
 
-                        PhDereferenceObject(memoryItem);
+                        PhDereferenceObject(memoryNode->MemoryItem);
                     }
                 }
                 break;
             case ID_MEMORY_FREE:
                 {
-                    PPH_MEMORY_ITEM memoryItem = PhGetSelectedListViewItemParam(lvHandle);
+                    PPH_MEMORY_NODE memoryNode = PhGetSelectedMemoryNode(&memoryContext->ListContext);
 
-                    if (memoryItem)
+                    if (memoryNode)
                     {
-                        PhReferenceObject(memoryItem);
-                        PhUiFreeMemory(hwndDlg, processItem->ProcessId, memoryItem, TRUE);
-                        PhDereferenceObject(memoryItem);
+                        PhReferenceObject(memoryNode->MemoryItem);
+                        PhUiFreeMemory(hwndDlg, processItem->ProcessId, memoryNode->MemoryItem, TRUE);
+                        PhDereferenceObject(memoryNode->MemoryItem);
                         // TODO: somehow update the list
                     }
                 }
                 break;
             case ID_MEMORY_DECOMMIT:
                 {
-                    PPH_MEMORY_ITEM memoryItem = PhGetSelectedListViewItemParam(lvHandle);
+                    PPH_MEMORY_NODE memoryNode = PhGetSelectedMemoryNode(&memoryContext->ListContext);
 
-                    if (memoryItem)
+                    if (memoryNode)
                     {
-                        PhReferenceObject(memoryItem);
-                        PhUiFreeMemory(hwndDlg, processItem->ProcessId, memoryItem, FALSE);
-                        PhDereferenceObject(memoryItem);
+                        PhReferenceObject(memoryNode->MemoryItem);
+                        PhUiFreeMemory(hwndDlg, processItem->ProcessId, memoryNode->MemoryItem, FALSE);
+                        PhDereferenceObject(memoryNode->MemoryItem);
                     }
                 }
                 break;
             case ID_MEMORY_READWRITEADDRESS:
                 {
-                    PPH_MEMORY_CONTEXT memoryContext = propPageContext->Context;
                     PPH_STRING selectedChoice = NULL;
+
+                    if (!memoryContext->MemoryItemListValid)
+                        break;
 
                     while (PhaChoiceDialog(
                         hwndDlg,
@@ -4121,42 +4151,27 @@ INT_PTR CALLBACK PhpProcessMemoryDlgProc(
                         ))
                     {
                         ULONG64 address64;
-                        ULONG_PTR address;
+                        PVOID address;
 
                         if (selectedChoice->Length == 0)
                             continue;
 
                         if (PhStringToInteger64(&selectedChoice->sr, 0, &address64))
                         {
-                            ULONG i;
-                            PPH_MEMORY_ITEM memoryItem = NULL;
-                            BOOLEAN found = FALSE;
+                            PPH_MEMORY_ITEM memoryItem;
 
-                            address = (ULONG_PTR)address64;
+                            address = (PVOID)address64;
+                            memoryItem = PhLookupMemoryItemList(&memoryContext->MemoryItemList, address);
 
-                            for (i = 0; i < memoryContext->MemoryList->Count; i++)
-                            {
-                                memoryItem = memoryContext->MemoryList->Items[i];
-
-                                // Dumb linear search.
-                                if (
-                                    address >= (ULONG_PTR)memoryItem->BaseAddress &&
-                                    address < (ULONG_PTR)memoryItem->BaseAddress + memoryItem->Size
-                                    )
-                                {
-                                    found = TRUE;
-                                    break;
-                                }
-                            }
-
-                            if (found)
+                            if (memoryItem)
                             {
                                 PPH_SHOWMEMORYEDITOR showMemoryEditor = PhAllocate(sizeof(PH_SHOWMEMORYEDITOR));
 
+                                memset(showMemoryEditor, 0, sizeof(PH_SHOWMEMORYEDITOR));
                                 showMemoryEditor->ProcessId = processItem->ProcessId;
                                 showMemoryEditor->BaseAddress = memoryItem->BaseAddress;
-                                showMemoryEditor->RegionSize = memoryItem->Size;
-                                showMemoryEditor->SelectOffset = (ULONG)(address - (ULONG_PTR)memoryItem->BaseAddress);
+                                showMemoryEditor->RegionSize = memoryItem->RegionSize;
+                                showMemoryEditor->SelectOffset = (ULONG)((ULONG_PTR)address - (ULONG_PTR)memoryItem->BaseAddress);
                                 showMemoryEditor->SelectLength = 0;
                                 ProcessHacker_ShowMemoryEditor(PhMainWndHandle, showMemoryEditor);
                                 break;
@@ -4171,103 +4186,27 @@ INT_PTR CALLBACK PhpProcessMemoryDlgProc(
                 break;
             case ID_MEMORY_COPY:
                 {
-                    PhCopyListView(lvHandle);
+                    PPH_STRING text;
+
+                    text = PhGetTreeNewText(tnHandle, 0);
+                    PhSetClipboardString(tnHandle, &text->sr);
+                    PhDereferenceObject(text);
                 }
                 break;
-            case IDC_REFRESH:
-                PhpRefreshProcessMemoryList(hwndDlg, propPageContext);
+            case IDC_HIDEFREEREGIONS:
+                {
+                    BOOLEAN hide;
+
+                    hide = Button_GetCheck(GetDlgItem(hwndDlg, IDC_HIDEFREEREGIONS)) == BST_CHECKED;
+                    PhSetOptionsMemoryList(&memoryContext->ListContext, hide);
+                }
                 break;
             case IDC_STRINGS:
                 PhShowMemoryStringDialog(hwndDlg, processItem);
                 break;
-            }
-        }
-        break;
-    case WM_NOTIFY:
-        {
-            LPNMHDR header = (LPNMHDR)lParam;
-
-            PhHandleListViewNotifyBehaviors(lParam, lvHandle, PH_LIST_VIEW_DEFAULT_1_BEHAVIORS);
-
-            switch (header->code)
-            {
-            case NM_DBLCLK:
-                {
-                    if (header->hwndFrom == lvHandle)
-                    {
-                        SendMessage(hwndDlg, WM_COMMAND, ID_MEMORY_READWRITEMEMORY, 0);
-                    }
-                }
+            case IDC_REFRESH:
+                PhpRefreshProcessMemoryList(hwndDlg, propPageContext);
                 break;
-            }
-        }
-        break;
-    case WM_CONTEXTMENU:
-        {
-            if ((HWND)wParam == lvHandle)
-            {
-                POINT point;
-                PPH_MEMORY_ITEM *memoryItems;
-                ULONG numberOfMemoryItems;
-
-                point.x = (SHORT)LOWORD(lParam);
-                point.y = (SHORT)HIWORD(lParam);
-
-                if (point.x == -1 && point.y == -1)
-                    PhGetListViewContextMenuPoint((HWND)wParam, &point);
-
-                PhGetSelectedListViewItemParams(lvHandle, &memoryItems, &numberOfMemoryItems);
-
-                // Allow menu to show when there are no items selected so
-                // the user can use Read/Write Address.
-                //if (numberOfMemoryItems != 0)
-                {
-                    PPH_EMENU menu;
-                    PPH_EMENU_ITEM item;
-
-                    menu = PhCreateEMenu();
-                    PhLoadResourceEMenuItem(menu, PhInstanceHandle, MAKEINTRESOURCE(IDR_MEMORY), 0);
-                    PhSetFlagsEMenuItem(menu, ID_MEMORY_READWRITEMEMORY, PH_EMENU_DEFAULT, PH_EMENU_DEFAULT);
-
-                    PhpInitializeMemoryMenu(menu, processItem->ProcessId, memoryItems, numberOfMemoryItems);
-
-                    if (PhPluginsEnabled)
-                    {
-                        PH_PLUGIN_MENU_INFORMATION menuInfo;
-
-                        menuInfo.Menu = menu;
-                        menuInfo.OwnerWindow = hwndDlg;
-                        menuInfo.u.Memory.ProcessId = processItem->ProcessId;
-                        menuInfo.u.Memory.MemoryItems = memoryItems;
-                        menuInfo.u.Memory.NumberOfMemoryItems = numberOfMemoryItems;
-
-                        PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackMemoryMenuInitializing), &menuInfo);
-                    }
-
-                    item = PhShowEMenu(
-                        menu,
-                        hwndDlg,
-                        PH_EMENU_SHOW_LEFTRIGHT,
-                        PH_ALIGN_LEFT | PH_ALIGN_TOP,
-                        point.x,
-                        point.y
-                        );
-
-                    if (item)
-                    {
-                        BOOLEAN handled = FALSE;
-
-                        if (PhPluginsEnabled)
-                            handled = PhPluginTriggerEMenuItem(hwndDlg, item);
-
-                        if (!handled)
-                            SendMessage(hwndDlg, WM_COMMAND, item->Id, 0);
-                    }
-
-                    PhDestroyEMenu(menu);
-                }
-
-                PhFree(memoryItems);
             }
         }
         break;
@@ -4320,7 +4259,7 @@ INT_PTR CALLBACK PhpProcessEnvironmentDlgProc(
 
                 flags = 0;
 
-#ifdef _M_X64
+#ifdef _WIN64
                 if (processItem->IsWow64)
                     flags |= PH_GET_PROCESS_ENVIRONMENT_WOW64;
 #endif
@@ -4344,10 +4283,9 @@ INT_PTR CALLBACK PhpProcessEnvironmentDlgProc(
                         if (variable.Name.Length == 0)
                             continue;
 
-                        // The strings are not guaranteed to be null-terminated, so we need to create
-                        // some temporary strings.
-                        nameString = PhCreateStringEx(variable.Name.Buffer, variable.Name.Length);
-                        valueString = PhCreateStringEx(variable.Value.Buffer, variable.Value.Length);
+                        // The strings are not guaranteed to be null-terminated, so we need to create some temporary strings.
+                        nameString = PhCreateString2(&variable.Name);
+                        valueString = PhCreateString2(&variable.Value);
 
                         lvItemIndex = PhAddListViewItem(lvHandle, MAXINT, nameString->Buffer, NULL);
                         PhSetListViewSubItem(lvHandle, lvItemIndex, 1, valueString->Buffer);
@@ -4389,6 +4327,11 @@ INT_PTR CALLBACK PhpProcessEnvironmentDlgProc(
     case WM_NOTIFY:
         {
             PhHandleListViewNotifyBehaviors(lParam, GetDlgItem(hwndDlg, IDC_LIST), PH_LIST_VIEW_DEFAULT_1_BEHAVIORS);
+        }
+        break;
+    case WM_CTLCOLORDLG:
+        {
+            return (INT_PTR)GetSysColorBrush(COLOR_WINDOW);
         }
         break;
     }
@@ -4498,20 +4441,26 @@ VOID PhInsertHandleObjectPropertiesEMenuItems(
     if (PhEqualString2(Info->TypeName, L"File", TRUE) || PhEqualString2(Info->TypeName, L"DLL", TRUE) ||
         PhEqualString2(Info->TypeName, L"Mapped File", TRUE) || PhEqualString2(Info->TypeName, L"Mapped Image", TRUE))
     {
-        PhInsertEMenuItem(parentItem, PhCreateEMenuItem(0, ID_HANDLE_OBJECTPROPERTIES2, L"File Properties", NULL, NULL), indexInParent);
-        PhInsertEMenuItem(parentItem, PhCreateEMenuItem(0, ID_HANDLE_OBJECTPROPERTIES1, PHA_APPEND_CTRL_ENTER(L"Open &File Location", EnableShortcut), NULL, NULL), indexInParent);
+        if (PhEqualString2(Info->TypeName, L"File", TRUE))
+            PhInsertEMenuItem(parentItem, PhCreateEMenuItem(0, ID_HANDLE_OBJECTPROPERTIES2, L"File Properties", NULL, NULL), indexInParent);
+
+        PhInsertEMenuItem(parentItem, PhCreateEMenuItem(0, ID_HANDLE_OBJECTPROPERTIES1, PhaAppendCtrlEnter(L"Open &File Location", EnableShortcut), NULL, NULL), indexInParent);
     }
     else if (PhEqualString2(Info->TypeName, L"Key", TRUE))
     {
-        PhInsertEMenuItem(parentItem, PhCreateEMenuItem(0, ID_HANDLE_OBJECTPROPERTIES1, PHA_APPEND_CTRL_ENTER(L"Open Key", EnableShortcut), NULL, NULL), indexInParent);
+        PhInsertEMenuItem(parentItem, PhCreateEMenuItem(0, ID_HANDLE_OBJECTPROPERTIES1, PhaAppendCtrlEnter(L"Open Key", EnableShortcut), NULL, NULL), indexInParent);
     }
     else if (PhEqualString2(Info->TypeName, L"Process", TRUE))
     {
-        PhInsertEMenuItem(parentItem, PhCreateEMenuItem(0, ID_HANDLE_OBJECTPROPERTIES1, PHA_APPEND_CTRL_ENTER(L"Process Properties", EnableShortcut), NULL, NULL), indexInParent);
+        PhInsertEMenuItem(parentItem, PhCreateEMenuItem(0, ID_HANDLE_OBJECTPROPERTIES1, PhaAppendCtrlEnter(L"Process Properties", EnableShortcut), NULL, NULL), indexInParent);
+    }
+    else if (PhEqualString2(Info->TypeName, L"Section", TRUE))
+    {
+        PhInsertEMenuItem(parentItem, PhCreateEMenuItem(0, ID_HANDLE_OBJECTPROPERTIES1, PhaAppendCtrlEnter(L"Read/Write Memory", EnableShortcut), NULL, NULL), indexInParent);
     }
     else if (PhEqualString2(Info->TypeName, L"Thread", TRUE))
     {
-        PhInsertEMenuItem(parentItem, PhCreateEMenuItem(0, ID_HANDLE_OBJECTPROPERTIES1, PHA_APPEND_CTRL_ENTER(L"Go to Thread", EnableShortcut), NULL, NULL), indexInParent);
+        PhInsertEMenuItem(parentItem, PhCreateEMenuItem(0, ID_HANDLE_OBJECTPROPERTIES1, PhaAppendCtrlEnter(L"Go to Thread", EnableShortcut), NULL, NULL), indexInParent);
     }
 }
 
@@ -4600,6 +4549,102 @@ VOID PhShowHandleObjectProperties1(
             {
                 PhShowError(hWnd, L"The process does not exist.");
             }
+        }
+    }
+    else if (PhEqualString2(Info->TypeName, L"Section", TRUE))
+    {
+        HANDLE handle = NULL;
+        BOOLEAN readOnly = FALSE;
+
+        if (!NT_SUCCESS(PhpDuplicateHandleFromProcessItem(
+            &handle,
+            SECTION_QUERY | SECTION_MAP_READ | SECTION_MAP_WRITE,
+            Info->ProcessId,
+            Info->Handle
+            )))
+        {
+            PhpDuplicateHandleFromProcessItem(
+                &handle,
+                SECTION_QUERY | SECTION_MAP_READ,
+                Info->ProcessId,
+                Info->Handle
+                );
+            readOnly = TRUE;
+        }
+
+        if (handle)
+        {
+            NTSTATUS status;
+            PPH_STRING sectionName = NULL;
+            SECTION_BASIC_INFORMATION basicInfo;
+            SIZE_T viewSize = PH_MAX_SECTION_EDIT_SIZE;
+            PVOID viewBase = NULL;
+            BOOLEAN tooBig = FALSE;
+
+            PhGetHandleInformation(NtCurrentProcess(), handle, -1, NULL, NULL, NULL, &sectionName);
+
+            if (NT_SUCCESS(PhGetSectionBasicInformation(handle, &basicInfo)))
+            {
+                if (basicInfo.MaximumSize.QuadPart <= PH_MAX_SECTION_EDIT_SIZE)
+                    viewSize = (SIZE_T)basicInfo.MaximumSize.QuadPart;
+                else
+                    tooBig = TRUE;
+
+                status = NtMapViewOfSection(
+                    handle,
+                    NtCurrentProcess(),
+                    &viewBase,
+                    0,
+                    0,
+                    NULL,
+                    &viewSize,
+                    ViewShare,
+                    0,
+                    readOnly ? PAGE_READONLY : PAGE_READWRITE
+                    );
+
+                if (status == STATUS_SECTION_PROTECTION && !readOnly)
+                {
+                    status = NtMapViewOfSection(
+                        handle,
+                        NtCurrentProcess(),
+                        &viewBase,
+                        0,
+                        0,
+                        NULL,
+                        &viewSize,
+                        ViewShare,
+                        0,
+                        PAGE_READONLY
+                        );
+                }
+
+                if (NT_SUCCESS(status))
+                {
+                    PPH_SHOWMEMORYEDITOR showMemoryEditor = PhAllocate(sizeof(PH_SHOWMEMORYEDITOR));
+
+                    if (tooBig)
+                        PhShowWarning(hWnd, L"The section size is greater than 32 MB. Only the first 32 MB will be available for editing.");
+
+                    memset(showMemoryEditor, 0, sizeof(PH_SHOWMEMORYEDITOR));
+                    showMemoryEditor->ProcessId = NtCurrentProcessId();
+                    showMemoryEditor->BaseAddress = viewBase;
+                    showMemoryEditor->RegionSize = viewSize;
+                    showMemoryEditor->SelectOffset = -1;
+                    showMemoryEditor->SelectLength = 0;
+                    showMemoryEditor->Title = sectionName ? PhConcatStrings2(L"Section - ", sectionName->Buffer) : PhCreateString(L"Section");
+                    showMemoryEditor->Flags = PH_MEMORY_EDITOR_UNMAP_VIEW_OF_SECTION;
+                    ProcessHacker_ShowMemoryEditor(PhMainWndHandle, showMemoryEditor);
+                }
+                else
+                {
+                    PhShowStatus(hWnd, L"Unable to map a view of the section", status, 0);
+                }
+            }
+
+            PhClearReference(&sectionName);
+
+            NtClose(handle);
         }
     }
     else if (PhEqualString2(Info->TypeName, L"Thread", TRUE))
@@ -4768,6 +4813,7 @@ VOID PhShowHandleContextMenu(
     {
         PPH_EMENU menu;
         PPH_EMENU_ITEM item;
+        PH_PLUGIN_MENU_INFORMATION menuInfo;
 
         menu = PhCreateEMenu();
         PhLoadResourceEMenuItem(menu, PhInstanceHandle, MAKEINTRESOURCE(IDR_HANDLE), 0);
@@ -4778,10 +4824,7 @@ VOID PhShowHandleContextMenu(
 
         if (PhPluginsEnabled)
         {
-            PH_PLUGIN_MENU_INFORMATION menuInfo;
-
-            menuInfo.Menu = menu;
-            menuInfo.OwnerWindow = hwndDlg;
+            PhPluginInitializeMenuInfo(&menuInfo, menu, hwndDlg, 0);
             menuInfo.u.Handle.ProcessId = ProcessItem->ProcessId;
             menuInfo.u.Handle.Handles = handles;
             menuInfo.u.Handle.NumberOfHandles = numberOfHandles;
@@ -4805,7 +4848,7 @@ VOID PhShowHandleContextMenu(
             handled = PhHandleCopyCellEMenuItem(item);
 
             if (!handled && PhPluginsEnabled)
-                handled = PhPluginTriggerEMenuItem(hwndDlg, item);
+                handled = PhPluginTriggerEMenuItem(&menuInfo, item);
 
             if (!handled)
                 SendMessage(hwndDlg, WM_COMMAND, item->Id, 0);
@@ -4886,11 +4929,10 @@ INT_PTR CALLBACK PhpProcessHandlesDlgProc(
             handlesContext->WindowHandle = hwndDlg;
 
             // Initialize the list.
-            handlesContext->ListContext.TreeNewHandle = GetDlgItem(hwndDlg, IDC_LIST);
-            tnHandle = handlesContext->ListContext.TreeNewHandle;
+            tnHandle = GetDlgItem(hwndDlg, IDC_LIST);
             BringWindowToTop(tnHandle);
-            PhInitializeHandleList(hwndDlg, tnHandle, processItem, &handlesContext->ListContext);
-            TreeNew_SetEmptyText(tnHandle, &EmptyHandlesText, 0);
+            PhInitializeHandleList(hwndDlg, tnHandle, &handlesContext->ListContext);
+            TreeNew_SetEmptyText(tnHandle, &LoadingText, 0);
             handlesContext->NeedsRedraw = FALSE;
             handlesContext->LastRunStatus = -1;
             handlesContext->ErrorMessage = NULL;
@@ -5160,8 +5202,8 @@ INT_PTR CALLBACK PhpProcessHandlesDlgProc(
                 else
                 {
                     message = PhGetStatusMessage(status, 0);
-                    PhSwapReference2(&handlesContext->ErrorMessage, PhFormatString(L"Unable to query handle information:\n%s", PhGetStringOrDefault(message, L"Unknown error.")));
-                    PhSwapReference(&message, NULL);
+                    PhMoveReference(&handlesContext->ErrorMessage, PhFormatString(L"Unable to query handle information:\n%s", PhGetStringOrDefault(message, L"Unknown error.")));
+                    PhClearReference(&message);
                     TreeNew_SetEmptyText(tnHandle, &handlesContext->ErrorMessage->sr, 0);
                 }
 
@@ -5531,14 +5573,11 @@ NTSTATUS PhpProcessPropertiesThreadStart(
 
         PhDrainAutoPool(&autoPool);
 
-        // Destroy the window when necessary.
         if (!PropSheet_GetCurrentPageHwnd(hwnd))
-        {
-            DestroyWindow(hwnd);
             break;
-        }
     }
 
+    DestroyWindow(hwnd);
     PhDereferenceObject(PropContext);
 
     PhDeleteAutoPool(&autoPool);

@@ -80,32 +80,23 @@ typedef enum _LDR_DLL_LOAD_REASON
     LoadReasonUnknown = -1
 } LDR_DLL_LOAD_REASON, *PLDR_DLL_LOAD_REASON;
 
-#define LDRP_STATIC_LINK 0x00000002
+#define LDRP_PACKAGED_BINARY 0x00000001
 #define LDRP_IMAGE_DLL 0x00000004
 #define LDRP_LOAD_IN_PROGRESS 0x00001000
-#define LDRP_UNLOAD_IN_PROGRESS 0x00002000
 #define LDRP_ENTRY_PROCESSED 0x00004000
-#define LDRP_ENTRY_INSERTED 0x00008000
-#define LDRP_CURRENT_LOAD 0x00010000
-#define LDRP_FAILED_BUILTIN_LOAD 0x00020000
 #define LDRP_DONT_CALL_FOR_THREADS 0x00040000
 #define LDRP_PROCESS_ATTACH_CALLED 0x00080000
-#define LDRP_DEBUG_SYMBOLS_LOADED 0x00100000
-#define LDRP_IMAGE_NOT_AT_BASE 0x00200000
+#define LDRP_PROCESS_ATTACH_FAILED 0x00100000
+#define LDRP_IMAGE_NOT_AT_BASE 0x00200000 // Vista and below
 #define LDRP_COR_IMAGE 0x00400000
-#define LDRP_COR_OWNS_UNMAP 0x00800000
-#define LDRP_SYSTEM_MAPPED 0x01000000
-#define LDRP_IMAGE_VERIFYING 0x02000000
-#define LDRP_DRIVER_DEPENDENT_DLL 0x04000000
-#define LDRP_ENTRY_NATIVE 0x08000000
+#define LDRP_DONT_RELOCATE 0x00800000
 #define LDRP_REDIRECTED 0x10000000
-#define LDRP_NON_PAGED_DEBUG_INFO 0x20000000
-#define LDRP_MM_LOADED 0x40000000
 #define LDRP_COMPAT_DATABASE_PROCESSED 0x80000000
 
-// Use the size of the structure as it was in
-// Windows XP.
+// Use the size of the structure as it was in Windows XP.
 #define LDR_DATA_TABLE_ENTRY_SIZE_WINXP FIELD_OFFSET(LDR_DATA_TABLE_ENTRY, DdagNode)
+#define LDR_DATA_TABLE_ENTRY_SIZE_WIN7 FIELD_OFFSET(LDR_DATA_TABLE_ENTRY, BaseNameHashValue)
+#define LDR_DATA_TABLE_ENTRY_SIZE_WIN8 FIELD_OFFSET(LDR_DATA_TABLE_ENTRY, ImplicitPathOptions)
 
 // symbols
 typedef struct _LDR_DATA_TABLE_ENTRY
@@ -140,9 +131,10 @@ typedef struct _LDR_DATA_TABLE_ENTRY
             ULONG InExceptionTable : 1;
             ULONG ReservedFlags1 : 2;
             ULONG LoadInProgress : 1;
-            ULONG ReservedFlags2 : 1;
+            ULONG LoadConfigProcessed : 1;
             ULONG EntryProcessed : 1;
-            ULONG ReservedFlags3 : 3;
+            ULONG ProtectDelayLoad : 1;
+            ULONG ReservedFlags3 : 2;
             ULONG DontCallForThreads : 1;
             ULONG ProcessAttachCalled : 1;
             ULONG ProcessAttachFailed : 1;
@@ -161,10 +153,11 @@ typedef struct _LDR_DATA_TABLE_ENTRY
     LIST_ENTRY HashLinks;
     ULONG TimeDateStamp;
     struct _ACTIVATION_CONTEXT *EntryPointActivationContext;
-    PVOID PatchInformation;
+    PVOID Lock;
     PLDR_DDAG_NODE DdagNode;
     LIST_ENTRY NodeModuleLink;
-    struct _LDRP_DLL_SNAP_CONTEXT *SnapContext;
+    struct _LDRP_LOAD_CONTEXT *LoadContext;
+    PVOID ParentDllBase;
     PVOID SwitchBackContext;
     RTL_BALANCED_NODE BaseAddressIndexNode;
     RTL_BALANCED_NODE MappingInfoIndexNode;
@@ -173,6 +166,7 @@ typedef struct _LDR_DATA_TABLE_ENTRY
     ULONG BaseNameHashValue;
     LDR_DLL_LOAD_REASON LoadReason;
     ULONG ImplicitPathOptions;
+    ULONG ReferenceCount;
 } LDR_DATA_TABLE_ENTRY, *PLDR_DATA_TABLE_ENTRY;
 
 typedef BOOLEAN (NTAPI *PDLL_INIT_ROUTINE)(

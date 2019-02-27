@@ -69,7 +69,7 @@ INT_PTR CALLBACK PhpSessionSendMessageDlgProc(
         {
             HWND iconComboBox;
 
-            SetProp(hwndDlg, L"SessionId", (HANDLE)(ULONG)lParam);
+            SetProp(hwndDlg, L"SessionId", UlongToHandle((ULONG)lParam));
             PhCenterWindow(hwndDlg, GetParent(hwndDlg));
 
             iconComboBox = GetDlgItem(hwndDlg, IDC_TYPE);
@@ -90,7 +90,7 @@ INT_PTR CALLBACK PhpSessionSendMessageDlgProc(
                     );
             }
 
-            SetFocus(GetDlgItem(hwndDlg, IDC_TEXT));
+            SendMessage(hwndDlg, WM_NEXTDLGCTL, (WPARAM)GetDlgItem(hwndDlg, IDC_TEXT), TRUE);
         }
         break;
     case WM_DESTROY:
@@ -107,24 +107,24 @@ INT_PTR CALLBACK PhpSessionSendMessageDlgProc(
                 break;
             case IDOK:
                 {
-                    ULONG sessionId = (ULONG)GetProp(hwndDlg, L"SessionId");
+                    ULONG sessionId = HandleToUlong(GetProp(hwndDlg, L"SessionId"));
                     PPH_STRING title;
                     PPH_STRING text;
                     ULONG icon = 0;
                     ULONG64 timeout = 0;
                     ULONG response;
 
-                    title = PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_TITLE);
-                    text = PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_TEXT);
+                    title = PhaGetDlgItemText(hwndDlg, IDC_TITLE);
+                    text = PhaGetDlgItemText(hwndDlg, IDC_TEXT);
 
                     PhFindIntegerSiKeyValuePairs(
                         PhpMessageBoxIconPairs,
                         sizeof(PhpMessageBoxIconPairs),
-                        PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_TYPE)->Buffer,
+                        PhaGetDlgItemText(hwndDlg, IDC_TYPE)->Buffer,
                         &icon
                         );
                     PhStringToInteger64(
-                        &PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_TIMEOUT)->sr,
+                        &PhaGetDlgItemText(hwndDlg, IDC_TIMEOUT)->sr,
                         10,
                         &timeout
                         );

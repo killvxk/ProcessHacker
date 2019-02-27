@@ -21,6 +21,7 @@
  */
 
 #include <phapp.h>
+#include <secedit.h>
 #include <settings.h>
 
 typedef struct _JOB_PAGE_CONTEXT
@@ -77,7 +78,7 @@ VOID PhShowJobProperties(
 
     pages[0] = PhCreateJobPage(OpenObject, Context, NULL);
 
-    PropertySheet(&propSheetHeader);
+    PhModalPropertySheet(&propSheetHeader);
 }
 
 HPROPSHEETPAGE PhCreateJobPage(
@@ -90,9 +91,7 @@ HPROPSHEETPAGE PhCreateJobPage(
     PROPSHEETPAGE propSheetPage;
     PJOB_PAGE_CONTEXT jobPageContext;
 
-    if (!NT_SUCCESS(PhCreateAlloc(&jobPageContext, sizeof(JOB_PAGE_CONTEXT))))
-        return NULL;
-
+    jobPageContext = PhCreateAlloc(sizeof(JOB_PAGE_CONTEXT));
     memset(jobPageContext, 0, sizeof(JOB_PAGE_CONTEXT));
     jobPageContext->OpenObject = OpenObject;
     jobPageContext->Context = Context;
@@ -180,7 +179,7 @@ static VOID PhpAddJobProcesses(
         for (i = 0; i < processIdList->NumberOfProcessIdsInList; i++)
         {
             clientId.UniqueProcess = (HANDLE)processIdList->ProcessIdList[i];
-            name = PHA_DEREFERENCE(PhGetClientIdName(&clientId));
+            name = PhAutoDereferenceObject(PhGetClientIdName(&clientId));
 
             PhAddListViewItem(processesLv, MAXINT, PhGetString(name), NULL);
         }
@@ -252,7 +251,7 @@ INT_PTR CALLBACK PhpJobPageProc(
                     NULL,
                     &jobObjectName
                     );
-                PHA_DEREFERENCE(jobObjectName);
+                PhAutoDereferenceObject(jobObjectName);
 
                 if (jobObjectName && jobObjectName->Length == 0)
                     jobObjectName = NULL;
@@ -532,7 +531,7 @@ VOID PhpShowJobAdvancedProperties(
         PhFree(accessEntries);
     }
 
-    PropertySheet(&propSheetHeader);
+    PhModalPropertySheet(&propSheetHeader);
 }
 
 static VOID PhpRefreshJobStatisticsInfo(

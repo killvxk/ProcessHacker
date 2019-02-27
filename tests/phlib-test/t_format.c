@@ -54,10 +54,10 @@ static VOID Test_string(
     PhInitializeStringRef(&format[0].u.String, L"This ");
     format[1].Type = StringZFormatType;
     format[1].u.StringZ = L"is ";
-    format[2].Type = AnsiStringFormatType;
-    RtlInitAnsiString(&format[2].u.AnsiString.as, "a ");
-    format[3].Type = AnsiStringZFormatType;
-    format[3].u.AnsiStringZ = "string.";
+    format[2].Type = MultiByteStringFormatType;
+    PhInitializeBytesRef(&format[2].u.MultiByteString, "a ");
+    format[3].Type = MultiByteStringZFormatType;
+    format[3].u.MultiByteStringZ = "string.";
     result = PhFormatToBuffer(format, 4, buffer, sizeof(buffer), NULL);
     assert(result && wcscmp(buffer, L"This is a string.") == 0);
 }
@@ -541,7 +541,7 @@ static VOID Test_wildcards(
     for (i = 0; i < sizeof(testCases) / sizeof(WCHAR *[3]); i++)
     {
         r = PhMatchWildcards(testCases[i][0], testCases[i][1], TRUE);
-        fail = r != WSTR_EQUAL(testCases[i][2], L"true");
+        fail = r != PhEqualStringZ(testCases[i][2], L"true", FALSE);
 
         if (fail)
         {

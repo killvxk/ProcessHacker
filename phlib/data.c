@@ -27,6 +27,10 @@ SID PhSeLocalSystemSid = { SID_REVISION, 1, SECURITY_NT_AUTHORITY, { SECURITY_LO
 SID PhSeLocalServiceSid = { SID_REVISION, 1, SECURITY_NT_AUTHORITY, { SECURITY_LOCAL_SERVICE_RID } };
 SID PhSeNetworkServiceSid = { SID_REVISION, 1, SECURITY_NT_AUTHORITY, { SECURITY_NETWORK_SERVICE_RID } };
 
+// Unicode
+
+PH_STRINGREF PhUnicodeByteOrderMark = PH_STRINGREF_INIT(L"\ufeff");
+
 // Characters
 
 DECLSPEC_SELECTANY
@@ -155,7 +159,8 @@ WCHAR *PhKThreadStateNames[MaximumThreadState] =
     L"Waiting",
     L"Transition",
     L"DeferredReady",
-    L"GateWait"
+    L"GateWait",
+    L"WaitingForProcessInSwap"
 };
 
 DECLSPEC_SELECTANY

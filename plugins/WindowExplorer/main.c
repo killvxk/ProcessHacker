@@ -43,7 +43,7 @@ VOID NTAPI MenuItemCallback(
     _In_opt_ PVOID Context
     );
 
-VOID NTAPI MainWindowShowingCallback(
+VOID NTAPI MainMenuInitializingCallback(
     _In_opt_ PVOID Parameter,
     _In_opt_ PVOID Context
     );
@@ -69,7 +69,7 @@ PH_CALLBACK_REGISTRATION PluginLoadCallbackRegistration;
 PH_CALLBACK_REGISTRATION PluginUnloadCallbackRegistration;
 PH_CALLBACK_REGISTRATION PluginShowOptionsCallbackRegistration;
 PH_CALLBACK_REGISTRATION PluginMenuItemCallbackRegistration;
-PH_CALLBACK_REGISTRATION MainWindowShowingCallbackRegistration;
+PH_CALLBACK_REGISTRATION MainMenuInitializingCallbackRegistration;
 PH_CALLBACK_REGISTRATION ProcessPropertiesInitializingCallbackRegistration;
 PH_CALLBACK_REGISTRATION ProcessMenuInitializingCallbackRegistration;
 PH_CALLBACK_REGISTRATION ThreadMenuInitializingCallbackRegistration;
@@ -112,7 +112,7 @@ LOGICAL DllMain(
                 break;
             }
 
-            PluginInstance = PhRegisterPlugin(L"ProcessHacker.WindowExplorer", Instance, &info);
+            PluginInstance = PhRegisterPlugin(PLUGIN_NAME, Instance, &info);
 
             if (!PluginInstance)
                 return FALSE;
@@ -120,6 +120,7 @@ LOGICAL DllMain(
             info->DisplayName = L"Window Explorer";
             info->Author = L"wj32";
             info->Description = L"View and manipulate windows.";
+            info->Url = L"http://processhacker.sf.net/forums/viewtopic.php?t=1116";
             info->HasOptions = FALSE;
 
             PhRegisterCallback(
@@ -148,10 +149,10 @@ LOGICAL DllMain(
                 );
 
             PhRegisterCallback(
-                PhGetGeneralCallback(GeneralCallbackMainWindowShowing),
-                MainWindowShowingCallback,
+                PhGetGeneralCallback(GeneralCallbackMainMenuInitializing),
+                MainMenuInitializingCallback,
                 NULL,
-                &MainWindowShowingCallbackRegistration
+                &MainMenuInitializingCallbackRegistration
                 );
             //PhRegisterCallback(
             //    PhGetGeneralCallback(GeneralCallbackProcessPropertiesInitializing),
@@ -273,8 +274,7 @@ VOID NTAPI MenuItemCallback(
                 WE_WINDOW_SELECTOR selector;
 
                 selector.Type = WeWindowSelectorDesktop;
-                PhReferenceObject(selectedChoice);
-                selector.Desktop.DesktopName = selectedChoice;
+                PhSetReference(&selector.Desktop.DesktopName, selectedChoice);
                 WeShowWindowsDialog(WE_PhMainWndHandle, &selector);
             }
 
@@ -302,15 +302,31 @@ VOID NTAPI MenuItemCallback(
     }
 }
 
-VOID NTAPI MainWindowShowingCallback(
+VOID NTAPI MainMenuInitializingCallback(
     _In_opt_ PVOID Parameter,
     _In_opt_ PVOID Context
     )
 {
-    PhPluginAddMenuItem(PluginInstance, PH_MENU_ITEM_LOCATION_VIEW, L"System Information", ID_VIEW_WINDOWS, L"Windows", NULL);
+    ULONG insertIndex;
+    PPH_EMENU_ITEM menuItem;
+    PPH_PLUGIN_MENU_INFORMATION menuInfo = Parameter;
+
+    if (menuInfo->u.MainMenu.SubMenuIndex != PH_MENU_ITEM_LOCATION_VIEW)
+        return;
+
+    if (menuItem = PhFindEMenuItem(menuInfo->Menu, PH_EMENU_FIND_STARTSWITH, L"System Information", 0))
+        insertIndex = PhIndexOfEMenuItem(menuInfo->Menu, menuItem) + 1;
+    else
+        insertIndex = 0;
+
+    PhInsertEMenuItem(menuInfo->Menu, menuItem = PhPluginCreateEMenuItem(PluginInstance, 0, ID_VIEW_WINDOWS, L"Windows", NULL), insertIndex);
 
     if (PhGetIntegerSetting(SETTING_NAME_SHOW_DESKTOP_WINDOWS))
-        PhPluginAddMenuItem(PluginInstance, PH_MENU_ITEM_LOCATION_VIEW, L"Windows", ID_VIEW_DESKTOPWINDOWS, L"Desktop Windows...", NULL);
+    {
+        insertIndex = PhIndexOfEMenuItem(menuInfo->Menu, menuItem) + 1;
+
+        PhInsertEMenuItem(menuInfo->Menu, PhPluginCreateEMenuItem(PluginInstance, 0, ID_VIEW_DESKTOPWINDOWS, L"Desktop Windows...", NULL), insertIndex);
+    }
 }
 
 VOID NTAPI ProcessPropertiesInitializingCallback(

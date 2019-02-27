@@ -3,7 +3,7 @@
  *   Main Program
  *
  * Copyright (C) 2010-2013 wj32
- * Copyright (C) 2012-2014 dmex
+ * Copyright (C) 2012-2016 dmex
  *
  * This file is part of Process Hacker.
  *
@@ -157,7 +157,7 @@ LOGICAL DllMain(
         {
             PPH_PLUGIN_INFORMATION info;
 
-            PluginInstance = PhRegisterPlugin(SETTING_PREFIX, Instance, &info);
+            PluginInstance = PhRegisterPlugin(PLUGIN_NAME, Instance, &info);
 
             if (!PluginInstance)
                 return FALSE;
@@ -165,7 +165,7 @@ LOGICAL DllMain(
             info->DisplayName = L"Online Checks";
             info->Author = L"dmex, wj32";
             info->Description = L"Allows files to be checked with online services.";
-            info->Url = L"http://processhacker.sf.net/forums/viewtopic.php?f=18&t=1118";
+            info->Url = L"http://processhacker.sf.net/forums/viewtopic.php?t=1118";
             info->HasOptions = FALSE;
 
             PhRegisterCallback(

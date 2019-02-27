@@ -2,7 +2,7 @@
  * Process Hacker -
  *   plugin support
  *
- * Copyright (C) 2010-2012 wj32
+ * Copyright (C) 2010-2015 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -26,6 +26,19 @@
 #include <phplug.h>
 #include <extmgri.h>
 #include <notifico.h>
+#include <phsvccl.h>
+
+typedef struct _PHP_PLUGIN_LOAD_ERROR
+{
+    PPH_STRING FileName;
+    PPH_STRING ErrorMessage;
+} PHP_PLUGIN_LOAD_ERROR, *PPHP_PLUGIN_LOAD_ERROR;
+
+typedef struct _PHP_PLUGIN_MENU_HOOK
+{
+    PPH_PLUGIN Plugin;
+    PVOID Context;
+} PHP_PLUGIN_MENU_HOOK, *PPHP_PLUGIN_MENU_HOOK;
 
 INT NTAPI PhpPluginsCompareFunction(
     _In_ PPH_AVL_LINKS Links1,
@@ -37,14 +50,15 @@ BOOLEAN PhLoadPlugin(
     );
 
 VOID PhpExecuteCallbackForAllPlugins(
-    _In_ PH_PLUGIN_CALLBACK Callback
+    _In_ PH_PLUGIN_CALLBACK Callback,
+    _In_ BOOLEAN StartupParameters
     );
 
 PH_AVL_TREE PhPluginsByName = PH_AVL_TREE_INIT(PhpPluginsCompareFunction);
 
 static PH_CALLBACK GeneralCallbacks[GeneralCallbackMaximum];
 static PPH_STRING PluginsDirectory;
-static PPH_STRING LoadingPluginFileName;
+static PPH_LIST LoadErrors;
 static ULONG NextPluginId = IDPLUGINS + 1;
 
 VOID PhPluginsInitialization(
@@ -74,7 +88,7 @@ INT NTAPI PhpPluginsCompareFunction(
     PPH_PLUGIN plugin1 = CONTAINING_RECORD(Links1, PH_PLUGIN, Links);
     PPH_PLUGIN plugin2 = CONTAINING_RECORD(Links2, PH_PLUGIN, Links);
 
-    return wcscmp(plugin1->Name, plugin2->Name);
+    return PhCompareStringRef(&plugin1->Name, &plugin2->Name, FALSE);
 }
 
 BOOLEAN PhpLocateDisabledPlugin(
@@ -83,40 +97,25 @@ BOOLEAN PhpLocateDisabledPlugin(
     _Out_opt_ PULONG FoundIndex
     )
 {
-    BOOLEAN found;
-    SIZE_T i;
-    SIZE_T length;
-    ULONG_PTR endOfPart;
-    PH_STRINGREF part;
+    PH_STRINGREF namePart;
+    PH_STRINGREF remainingPart;
 
-    found = FALSE;
-    i = 0;
-    length = List->Length / 2;
+    remainingPart = List->sr;
 
-    while (i < length)
+    while (remainingPart.Length != 0)
     {
-        endOfPart = PhFindCharInString(List, i, '|');
+        PhSplitStringRefAtChar(&remainingPart, '|', &namePart, &remainingPart);
 
-        if (endOfPart == -1)
-            endOfPart = length;
-
-        part.Buffer = &List->Buffer[i];
-        part.Length = (endOfPart - i) * sizeof(WCHAR);
-
-        if (PhEqualStringRef(&part, BaseName, TRUE))
+        if (PhEqualStringRef(&namePart, BaseName, TRUE))
         {
-            found = TRUE;
-
             if (FoundIndex)
-                *FoundIndex = (ULONG)i;
+                *FoundIndex = (ULONG)(namePart.Buffer - List->Buffer);
 
-            break;
+            return TRUE;
         }
-
-        i = endOfPart + 1;
     }
 
-    return found;
+    return FALSE;
 }
 
 BOOLEAN PhIsPluginDisabled(
@@ -265,6 +264,49 @@ VOID PhLoadPlugins(
         NtClose(pluginsDirectoryHandle);
     }
 
+    // Handle load errors.
+    // In certain startup modes we want to ignore all plugin load errors.
+    if (LoadErrors && LoadErrors->Count != 0 && !PhStartupParameters.PhSvc)
+    {
+        PH_STRING_BUILDER sb;
+        ULONG i;
+        PPHP_PLUGIN_LOAD_ERROR loadError;
+        PPH_STRING baseName;
+
+        PhInitializeStringBuilder(&sb, 100);
+        PhAppendStringBuilder2(&sb, L"Unable to load the following plugin(s):\n\n");
+
+        for (i = 0; i < LoadErrors->Count; i++)
+        {
+            loadError = LoadErrors->Items[i];
+            baseName = PhGetBaseName(loadError->FileName);
+            PhAppendFormatStringBuilder(&sb, L"%s: %s\n",
+                baseName->Buffer, PhGetStringOrDefault(loadError->ErrorMessage, L"An unknown error occurred."));
+            PhDereferenceObject(baseName);
+        }
+
+        PhAppendStringBuilder2(&sb, L"\nDo you want to disable the above plugin(s)?");
+
+        if (PhShowMessage(
+            NULL,
+            MB_ICONERROR | MB_YESNO,
+            sb.String->Buffer
+            ) == IDYES)
+        {
+            ULONG i;
+
+            for (i = 0; i < LoadErrors->Count; i++)
+            {
+                loadError = LoadErrors->Items[i];
+                baseName = PhGetBaseName(loadError->FileName);
+                PhSetPluginDisabled(&baseName->sr, TRUE);
+                PhDereferenceObject(baseName);
+            }
+        }
+
+        PhDeleteStringBuilder(&sb);
+    }
+
     // When we loaded settings before, we didn't know about plugin settings, so they
     // went into the ignored settings list. Now that they've had a chance to add
     // settings, we should scan the ignored settings list and move the settings to
@@ -272,7 +314,7 @@ VOID PhLoadPlugins(
     if (PhSettingsFileName)
         PhConvertIgnoredSettings();
 
-    PhpExecuteCallbackForAllPlugins(PluginCallbackLoad);
+    PhpExecuteCallbackForAllPlugins(PluginCallbackLoad, TRUE);
 }
 
 /**
@@ -282,30 +324,7 @@ VOID PhUnloadPlugins(
     VOID
     )
 {
-    PhpExecuteCallbackForAllPlugins(PluginCallbackUnload);
-}
-
-VOID PhpHandlePluginLoadError(
-    _In_ PPH_STRING FileName,
-    _In_opt_ PPH_STRING ErrorMessage
-    )
-{
-    PPH_STRING baseName;
-
-    baseName = PhGetBaseName(FileName);
-
-    if (PhShowMessage(
-        NULL,
-        MB_ICONERROR | MB_YESNO,
-        L"Unable to load %s: %s\nDo you want to disable the plugin?",
-        baseName->Buffer,
-        PhGetStringOrDefault(ErrorMessage, L"An unknown error occurred.")
-        ) == IDYES)
-    {
-        PhSetPluginDisabled(&baseName->sr, TRUE);
-    }
-
-    PhDereferenceObject(baseName);
+    PhpExecuteCallbackForAllPlugins(PluginCallbackUnload, FALSE);
 }
 
 /**
@@ -324,12 +343,7 @@ BOOLEAN PhLoadPlugin(
     fileName = PhGetFullPath(FileName->Buffer, NULL);
 
     if (!fileName)
-    {
-        fileName = FileName;
-        PhReferenceObject(fileName);
-    }
-
-    LoadingPluginFileName = fileName;
+        PhSetReference(&fileName, FileName);
 
     success = TRUE;
 
@@ -341,33 +355,68 @@ BOOLEAN PhLoadPlugin(
 
     if (!success)
     {
-        PhpHandlePluginLoadError(fileName, errorMessage);
+        PPHP_PLUGIN_LOAD_ERROR loadError;
+
+        loadError = PhAllocate(sizeof(PHP_PLUGIN_LOAD_ERROR));
+        PhSetReference(&loadError->FileName, fileName);
+        PhSetReference(&loadError->ErrorMessage, errorMessage);
+
+        if (!LoadErrors)
+            LoadErrors = PhCreateList(2);
+
+        PhAddItemList(LoadErrors, loadError);
 
         if (errorMessage)
             PhDereferenceObject(errorMessage);
     }
 
     PhDereferenceObject(fileName);
-    LoadingPluginFileName = NULL;
 
     return success;
 }
 
 VOID PhpExecuteCallbackForAllPlugins(
-    _In_ PH_PLUGIN_CALLBACK Callback
+    _In_ PH_PLUGIN_CALLBACK Callback,
+    _In_ BOOLEAN StartupParameters
     )
 {
     PPH_AVL_LINKS links;
 
-    links = PhMinimumElementAvlTree(&PhPluginsByName);
-
-    while (links)
+    for (links = PhMinimumElementAvlTree(&PhPluginsByName); links; links = PhSuccessorElementAvlTree(links))
     {
         PPH_PLUGIN plugin = CONTAINING_RECORD(links, PH_PLUGIN, Links);
+        PPH_LIST parameters = NULL;
 
-        PhInvokeCallback(PhGetPluginCallback(plugin, Callback), NULL);
+        // Find relevant startup parameters for this plugin.
+        if (StartupParameters && PhStartupParameters.PluginParameters)
+        {
+            ULONG i;
 
-        links = PhSuccessorElementAvlTree(links);
+            for (i = 0; i < PhStartupParameters.PluginParameters->Count; i++)
+            {
+                PPH_STRING string = PhStartupParameters.PluginParameters->Items[i];
+                PH_STRINGREF pluginName;
+                PH_STRINGREF parameter;
+
+                if (PhSplitStringRefAtChar(&string->sr, ':', &pluginName, &parameter) &&
+                    PhEqualStringRef(&pluginName, &plugin->Name, FALSE) &&
+                    parameter.Length != 0)
+                {
+                    if (!parameters)
+                        parameters = PhCreateList(3);
+
+                    PhAddItemList(parameters, PhCreateString2(&parameter));
+                }
+            }
+        }
+
+        PhInvokeCallback(PhGetPluginCallback(plugin, Callback), parameters);
+
+        if (parameters)
+        {
+            PhDereferenceObjects(parameters->Items, parameters->Count);
+            PhDereferenceObject(parameters);
+        }
     }
 }
 
@@ -421,7 +470,7 @@ PPH_PLUGIN PhRegisterPlugin(
     ULONG i;
     PPH_STRING fileName;
 
-    PhInitializeStringRef(&pluginName, Name);
+    PhInitializeStringRefLongHint(&pluginName, Name);
 
     if (!PhpValidatePluginName(&pluginName))
         return NULL;
@@ -434,7 +483,7 @@ PPH_PLUGIN PhRegisterPlugin(
     plugin = PhAllocate(sizeof(PH_PLUGIN));
     memset(plugin, 0, sizeof(PH_PLUGIN));
 
-    plugin->Name = Name;
+    plugin->Name = pluginName;
     plugin->DllBase = DllBase;
 
     plugin->FileName = fileName;
@@ -464,23 +513,54 @@ PPH_PLUGIN PhRegisterPlugin(
  *
  * \param Name The name of the plugin.
  *
- * \return A plugin instance structure, or NULL if the plugin
- * was not found.
+ * \return A plugin instance structure, or NULL if the plugin was not found.
  */
 PPH_PLUGIN PhFindPlugin(
     _In_ PWSTR Name
     )
 {
+    PH_STRINGREF name;
+
+    PhInitializeStringRefLongHint(&name, Name);
+
+    return PhFindPlugin2(&name);
+}
+
+/**
+ * Locates a plugin instance structure.
+ *
+ * \param Name The name of the plugin.
+ *
+ * \return A plugin instance structure, or NULL if the plugin was not found.
+ */
+PPH_PLUGIN PhFindPlugin2(
+    _In_ PPH_STRINGREF Name
+    )
+{
     PPH_AVL_LINKS links;
     PH_PLUGIN lookupPlugin;
 
-    lookupPlugin.Name = Name;
+    lookupPlugin.Name = *Name;
     links = PhFindElementAvlTree(&PhPluginsByName, &lookupPlugin.Links);
 
     if (links)
         return CONTAINING_RECORD(links, PH_PLUGIN, Links);
     else
         return NULL;
+}
+
+/**
+ * Gets a pointer to a plugin's additional information block.
+ *
+ * \param Plugin The plugin instance structure.
+ *
+ * \return The plugin's additional information block.
+ */
+PPH_PLUGIN_INFORMATION PhGetPluginInformation(
+    _In_ PPH_PLUGIN Plugin
+    )
+{
+    return &Plugin->Information;
 }
 
 /**
@@ -620,8 +700,8 @@ VOID PhPluginGetSystemStatistics(
     Statistics->CommitPages = PhGetItemCircularBuffer_ULONG(&PhCommitHistory, 0);
     Statistics->PhysicalPages = PhGetItemCircularBuffer_ULONG(&PhPhysicalHistory, 0);
 
-    Statistics->MaxCpuProcessId = LongToHandle(PhGetItemCircularBuffer_ULONG(&PhMaxCpuHistory, 0));
-    Statistics->MaxIoProcessId = LongToHandle(PhGetItemCircularBuffer_ULONG(&PhMaxIoHistory, 0));
+    Statistics->MaxCpuProcessId = UlongToHandle(PhGetItemCircularBuffer_ULONG(&PhMaxCpuHistory, 0));
+    Statistics->MaxIoProcessId = UlongToHandle(PhGetItemCircularBuffer_ULONG(&PhMaxIoHistory, 0));
 
     Statistics->CpuKernelHistory = &PhCpuKernelHistory;
     Statistics->CpuUserHistory = &PhCpuUserHistory;
@@ -702,26 +782,100 @@ PPH_EMENU_ITEM PhPluginCreateEMenuItem(
 }
 
 /**
+ * Adds a menu hook.
+ *
+ * \param MenuInfo The plugin menu information structure.
+ * \param Plugin A plugin instance structure.
+ * \param Context A user-defined value that is later accessible from the callback.
+ *
+ * \remarks The \ref PluginCallbackMenuHook callback is invoked when any menu item
+ * from the menu is chosen.
+ */
+BOOLEAN PhPluginAddMenuHook(
+    _Inout_ PPH_PLUGIN_MENU_INFORMATION MenuInfo,
+    _In_ PPH_PLUGIN Plugin,
+    _In_opt_ PVOID Context
+    )
+{
+    PPHP_PLUGIN_MENU_HOOK hook;
+
+    if (MenuInfo->Flags & PH_PLUGIN_MENU_DISALLOW_HOOKS)
+        return FALSE;
+
+    if (!MenuInfo->PluginHookList)
+        MenuInfo->PluginHookList = PhAutoDereferenceObject(PhCreateList(2));
+
+    hook = PhAutoDereferenceObject(PhCreateAlloc(sizeof(PHP_PLUGIN_MENU_HOOK)));
+    hook->Plugin = Plugin;
+    hook->Context = Context;
+    PhAddItemList(MenuInfo->PluginHookList, hook);
+
+    return TRUE;
+}
+
+/**
+ * Initializes a plugin menu information structure.
+ *
+ * \param MenuInfo The structure to initialize.
+ * \param Menu The menu being shown.
+ * \param OwnerWindow The window that owns the menu.
+ * \param Flags Additional flags.
+ *
+ * \remarks This function is reserved for internal use.
+ */
+VOID PhPluginInitializeMenuInfo(
+    _Out_ PPH_PLUGIN_MENU_INFORMATION MenuInfo,
+    _In_opt_ PPH_EMENU Menu,
+    _In_ HWND OwnerWindow,
+    _In_ ULONG Flags
+    )
+{
+    memset(MenuInfo, 0, sizeof(PH_PLUGIN_MENU_INFORMATION));
+    MenuInfo->Menu = Menu;
+    MenuInfo->OwnerWindow = OwnerWindow;
+    MenuInfo->Flags = Flags;
+}
+
+/**
  * Triggers a plugin menu item.
  *
- * \param OwnerWindow The window that owns the menu containing the menu item.
+ * \param MenuInfo The plugin menu information structure.
  * \param Item The menu item chosen by the user.
  *
  * \remarks This function is reserved for internal use.
  */
 BOOLEAN PhPluginTriggerEMenuItem(
-    _In_ HWND OwnerWindow,
+    _In_ PPH_PLUGIN_MENU_INFORMATION MenuInfo,
     _In_ PPH_EMENU_ITEM Item
     )
 {
     PPH_PLUGIN_MENU_ITEM pluginMenuItem;
+    ULONG i;
+    PPHP_PLUGIN_MENU_HOOK hook;
+    PH_PLUGIN_MENU_HOOK_INFORMATION menuHookInfo;
+
+    if (MenuInfo->PluginHookList)
+    {
+        for (i = 0; i < MenuInfo->PluginHookList->Count; i++)
+        {
+            hook = MenuInfo->PluginHookList->Items[i];
+            menuHookInfo.MenuInfo = MenuInfo;
+            menuHookInfo.SelectedItem = Item;
+            menuHookInfo.Context = hook->Context;
+            menuHookInfo.Handled = FALSE;
+            PhInvokeCallback(PhGetPluginCallback(hook->Plugin, PluginCallbackMenuHook), &menuHookInfo);
+
+            if (menuHookInfo.Handled)
+                return TRUE;
+        }
+    }
 
     if (Item->Id != ID_PLUGIN_MENU_ITEM)
         return FALSE;
 
     pluginMenuItem = Item->Context;
 
-    pluginMenuItem->OwnerWindow = OwnerWindow;
+    pluginMenuItem->OwnerWindow = MenuInfo->OwnerWindow;
 
     PhInvokeCallback(PhGetPluginCallback(pluginMenuItem->Plugin, PluginCallbackMenuItem), pluginMenuItem);
 
@@ -851,4 +1005,43 @@ VOID PhPluginEnableTreeNewNotify(
     )
 {
     PhCmSetNotifyPlugin(CmData, Plugin);
+}
+
+BOOLEAN PhPluginQueryPhSvc(
+    _Out_ PPH_PLUGIN_PHSVC_CLIENT Client
+    )
+{
+    if (!PhSvcClServerProcessId)
+        return FALSE;
+
+    Client->ServerProcessId = PhSvcClServerProcessId;
+    Client->FreeHeap = PhSvcpFreeHeap;
+    Client->CreateString = PhSvcpCreateString;
+
+    return TRUE;
+}
+
+NTSTATUS PhPluginCallPhSvc(
+    _In_ PPH_PLUGIN Plugin,
+    _In_ ULONG SubId,
+    _In_reads_bytes_opt_(InLength) PVOID InBuffer,
+    _In_ ULONG InLength,
+    _Out_writes_bytes_opt_(OutLength) PVOID OutBuffer,
+    _In_ ULONG OutLength
+    )
+{
+    NTSTATUS status;
+    PPH_STRING apiId;
+    PH_FORMAT format[4];
+
+    PhInitFormatC(&format[0], '+');
+    PhInitFormatSR(&format[1], Plugin->Name);
+    PhInitFormatC(&format[2], '+');
+    PhInitFormatU(&format[3], SubId);
+    apiId = PhFormat(format, 4, 50);
+
+    status = PhSvcCallPlugin(&apiId->sr, InBuffer, InLength, OutBuffer, OutLength);
+    PhDereferenceObject(apiId);
+
+    return status;
 }

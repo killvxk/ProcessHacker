@@ -1,7 +1,7 @@
 /*
  * KProcessHacker
  *
- * Copyright (C) 2010-2013 wj32
+ * Copyright (C) 2010-2015 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -574,7 +574,6 @@ static NTSTATUS KphpX86DataInitialization(
         KphDynEgeGuid = 0xc;
         KphDynEpObjectTable = 0x150;
         KphDynEpRundownProtect = 0xb0;
-        KphDynEreGuidEntry = 0x8;
         KphDynOtName = 0x8;
         KphDynOtIndex = 0x14;
 

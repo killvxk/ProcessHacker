@@ -1,3 +1,15 @@
+1.15
+ * Added tray icon mini info window support
+ * Improved automatic GPU node selection
+
+1.14
+ * Added Disk and Network graphs for all processes
+
+1.13
+ * Added GPU graphs for all processes
+ * Can now use the search box in the Disk tab
+ * Improved kernel logger handling on Windows 8
+
 1.12
  * Improved support for multiple GPUs (again)
  * GPU column now respects "Include CPU usage of children" option

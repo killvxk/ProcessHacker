@@ -25,6 +25,7 @@
 
 #include "wndexp.h"
 #include "resource.h"
+#include <symprv.h>
 #include <windowsx.h>
 
 #define NUMBER_OF_PAGES 4
@@ -254,7 +255,7 @@ VOID WeShowWindowProperties(
     PhAcquireQueuedLockExclusive(&WePropertiesCreateLock);
     PhAddItemList(WePropertiesCreateList, context);
     PhReleaseQueuedLockExclusive(&WePropertiesCreateLock);
-    PostThreadMessage((ULONG)WePropertiesThreadClientId.UniqueThread, WM_NULL, 0, 0);
+    PostThreadMessage(HandleToUlong(WePropertiesThreadClientId.UniqueThread), WM_NULL, 0, 0);
 }
 
 VOID WepReferenceWindowPropertiesContext(
@@ -272,7 +273,7 @@ VOID WepDereferenceWindowPropertiesContext(
     {
         PLIST_ENTRY listEntry;
 
-        PhSwapReference(&Context->SymbolProvider, NULL);
+        PhClearReference(&Context->SymbolProvider);
 
         // Destroy results that have not been processed by any property pages.
 
@@ -285,13 +286,13 @@ VOID WepDereferenceWindowPropertiesContext(
             resolveContext = CONTAINING_RECORD(listEntry, SYMBOL_RESOLVE_CONTEXT, ListEntry);
             listEntry = listEntry->Flink;
 
-            PhSwapReference(&resolveContext->Symbol, NULL);
+            PhClearReference(&resolveContext->Symbol);
             PhFree(resolveContext);
         }
 
-        PhSwapReference(&Context->WndProcSymbol, NULL);
-        PhSwapReference(&Context->DlgProcSymbol, NULL);
-        PhSwapReference(&Context->ClassWndProcSymbol, NULL);
+        PhClearReference(&Context->WndProcSymbol);
+        PhClearReference(&Context->DlgProcSymbol);
+        PhClearReference(&Context->ClassWndProcSymbol);
 
         PhFree(Context);
     }
@@ -595,7 +596,7 @@ static VOID WepEnsureHookDataValid(
     if (!Context->HookDataValid)
     {
         PWE_HOOK_SHARED_DATA data;
-#ifdef _M_X64
+#ifdef _WIN64
         HANDLE processHandle;
         BOOLEAN isWow64 = FALSE;
 #endif
@@ -607,7 +608,7 @@ static VOID WepEnsureHookDataValid(
             return;
         }
 
-#ifdef _M_X64
+#ifdef _WIN64
         // We can't use the hook on WOW64 processes.
         if (NT_SUCCESS(PhOpenProcess(&processHandle, *(PULONG)WeGetProcedureAddress("ProcessQueryAccess"), Context->ClientId.UniqueProcess)))
         {
@@ -770,7 +771,7 @@ static VOID WepRefreshWindowGeneralInfo(
     SetDlgItemText(hwndDlg, IDC_THREAD, clientIdName->Buffer);
     PhDereferenceObject(clientIdName);
 
-    windowText = PHA_DEREFERENCE(PhGetWindowText(Context->WindowHandle));
+    windowText = PhAutoDereferenceObject(PhGetWindowText(Context->WindowHandle));
     SetDlgItemText(hwndDlg, IDC_TEXT, PhGetStringOrEmpty(windowText));
 
     if (GetWindowInfo(Context->WindowHandle, &windowInfo))
@@ -806,6 +807,7 @@ static VOID WepRefreshWindowGeneralInfo(
     SetDlgItemText(hwndDlg, IDC_MENUHANDLE, PhaFormatString(L"0x%Ix", GetMenu(Context->WindowHandle))->Buffer);
     SetDlgItemText(hwndDlg, IDC_USERDATA, PhaFormatString(L"0x%Ix", GetWindowLongPtr(Context->WindowHandle, GWLP_USERDATA))->Buffer);
     SetDlgItemText(hwndDlg, IDC_UNICODE, IsWindowUnicode(Context->WindowHandle) ? L"Yes" : L"No");
+    SetDlgItemText(hwndDlg, IDC_CTRLID, PhaFormatString(L"%lu", GetDlgCtrlID(Context->WindowHandle))->Buffer);
 
     WepEnsureHookDataValid(Context);
 
@@ -849,7 +851,7 @@ INT_PTR CALLBACK WepWindowGeneralDlgProc(
             {
             case IDC_REFRESH:
                 context->HookDataValid = FALSE;
-                PhSwapReference(&context->WndProcSymbol, NULL);
+                PhClearReference(&context->WndProcSymbol);
                 WepRefreshWindowGeneralInfo(hwndDlg, context);
                 break;
             }
@@ -866,9 +868,9 @@ INT_PTR CALLBACK WepWindowGeneralDlgProc(
                 PhReleaseQueuedLockExclusive(&context->ResolveListLock);
 
                 if (resolveContext->ResolveLevel != PhsrlModule && resolveContext->ResolveLevel != PhsrlFunction)
-                    PhSwapReference(&resolveContext->Symbol, NULL);
+                    PhClearReference(&resolveContext->Symbol);
 
-                PhSwapReference2(&context->WndProcSymbol, resolveContext->Symbol);
+                PhMoveReference(&context->WndProcSymbol, resolveContext->Symbol);
                 PhFree(resolveContext);
 
                 context->WndProcResolving--;
@@ -880,9 +882,9 @@ INT_PTR CALLBACK WepWindowGeneralDlgProc(
                 PhReleaseQueuedLockExclusive(&context->ResolveListLock);
 
                 if (resolveContext->ResolveLevel != PhsrlModule && resolveContext->ResolveLevel != PhsrlFunction)
-                    PhSwapReference(&resolveContext->Symbol, NULL);
+                    PhClearReference(&resolveContext->Symbol);
 
-                PhSwapReference2(&context->DlgProcSymbol, resolveContext->Symbol);
+                PhMoveReference(&context->DlgProcSymbol, resolveContext->Symbol);
                 PhFree(resolveContext);
 
                 context->DlgProcResolving--;
@@ -1046,13 +1048,13 @@ static VOID WepRefreshWindowClassInfo(
 
     if (PhEndsWithString2(stringBuilder.String, L" | ", FALSE))
     {
-        PhRemoveStringBuilder(&stringBuilder, stringBuilder.String->Length / 2 - 3, 3);
+        PhRemoveEndStringBuilder(&stringBuilder, 3);
         PhAppendCharStringBuilder(&stringBuilder, ')');
     }
     else
     {
         // No styles. Remove the brackets.
-        PhRemoveStringBuilder(&stringBuilder, stringBuilder.String->Length / 2 - 1, 1);
+        PhRemoveEndStringBuilder(&stringBuilder, 1);
     }
 
     SetDlgItemText(hwndDlg, IDC_STYLES, stringBuilder.String->Buffer);
@@ -1096,7 +1098,7 @@ INT_PTR CALLBACK WepWindowClassDlgProc(
             {
             case IDC_REFRESH:
                 context->HookDataValid = FALSE;
-                PhSwapReference(&context->ClassWndProcSymbol, NULL);
+                PhClearReference(&context->ClassWndProcSymbol);
                 WepRefreshWindowClassInfo(hwndDlg, context);
                 break;
             }
@@ -1111,9 +1113,9 @@ INT_PTR CALLBACK WepWindowClassDlgProc(
             PhReleaseQueuedLockExclusive(&context->ResolveListLock);
 
             if (resolveContext->ResolveLevel != PhsrlModule && resolveContext->ResolveLevel != PhsrlFunction)
-                PhSwapReference(&resolveContext->Symbol, NULL);
+                PhClearReference(&resolveContext->Symbol);
 
-            PhSwapReference2(&context->ClassWndProcSymbol, resolveContext->Symbol);
+            PhMoveReference(&context->ClassWndProcSymbol, resolveContext->Symbol);
             PhFree(resolveContext);
 
             context->ClassWndProcResolving--;
@@ -1138,10 +1140,10 @@ static BOOL CALLBACK EnumPropsExCallback(
 
     propName = lpszString;
 
-    if ((ULONG_PTR)lpszString < 0x10000)
+    if ((ULONG_PTR)lpszString < USHRT_MAX)
     {
         // This is an integer atom.
-        propName = PhaFormatString(L"#%u", (ULONG)lpszString)->Buffer;
+        propName = PhaFormatString(L"#%lu", (ULONG_PTR)lpszString)->Buffer;
     }
 
     lvItemIndex = PhAddListViewItem((HWND)dwData, MAXINT, propName, NULL);

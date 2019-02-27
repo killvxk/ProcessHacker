@@ -81,7 +81,7 @@ INT_PTR CALLBACK EtpModuleServicesDlgProc(
 
             PhCenterWindow(hwndDlg, GetParent(hwndDlg));
 
-            I_QueryTagInformation = PhGetProcAddress(L"advapi32.dll", "I_QueryTagInformation");
+            I_QueryTagInformation = PhGetModuleProcAddress(L"advapi32.dll", "I_QueryTagInformation");
 
             if (!I_QueryTagInformation)
             {
@@ -91,7 +91,7 @@ INT_PTR CALLBACK EtpModuleServicesDlgProc(
             }
 
             memset(&namesReferencingModule, 0, sizeof(TAG_INFO_NAMES_REFERENCING_MODULE));
-            namesReferencingModule.InParams.dwPid = (ULONG)context->ProcessId;
+            namesReferencingModule.InParams.dwPid = HandleToUlong(context->ProcessId);
             namesReferencingModule.InParams.pszModule = context->ModuleName;
 
             win32Result = I_QueryTagInformation(NULL, eTagInfoLevelNamesReferencingModule, &namesReferencingModule);
@@ -118,7 +118,7 @@ INT_PTR CALLBACK EtpModuleServicesDlgProc(
 
                 while (TRUE)
                 {
-                    nameLength = (ULONG)wcslen(serviceName);
+                    nameLength = (ULONG)PhCountStringZ(serviceName);
 
                     if (nameLength == 0)
                         break;

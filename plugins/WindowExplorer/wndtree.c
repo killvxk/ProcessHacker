@@ -21,7 +21,6 @@
  */
 
 #include "wndexp.h"
-#include <colmgr.h>
 #include "resource.h"
 
 BOOLEAN WepWindowNodeHashtableCompareFunction(
@@ -119,11 +118,7 @@ ULONG WepWindowNodeHashtableHashFunction(
     _In_ PVOID Entry
     )
 {
-#ifdef _M_IX86
-    return PhHashInt32((ULONG)(*(PWE_WINDOW_NODE *)Entry)->WindowHandle);
-#else
-    return PhHashInt64((ULONG64)(*(PWE_WINDOW_NODE *)Entry)->WindowHandle);
-#endif
+    return PhHashIntPtr((ULONG_PTR)(*(PWE_WINDOW_NODE *)Entry)->WindowHandle);
 }
 
 PWE_WINDOW_NODE WeAddWindowNode(
@@ -222,7 +217,7 @@ VOID WepDestroyWindowNode(
 
 BEGIN_SORT_FUNCTION(Class)
 {
-    sortResult = wcsicmp(node1->WindowClass, node2->WindowClass);
+    sortResult = _wcsicmp(node1->WindowClass, node2->WindowClass);
 }
 END_SORT_FUNCTION
 

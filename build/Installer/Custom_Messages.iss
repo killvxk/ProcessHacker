@@ -1,6 +1,6 @@
 ;* Process Hacker 2 - Installer custom messages
 ;*
-;* Copyright (C) 2010-2012 XhmikosR
+;* Copyright (C) 2010-2015 XhmikosR
 ;*
 ;* This file is part of Process Hacker.
 ;*
@@ -28,6 +28,7 @@ en.comp_DotNetTools           =.NET Tools
 en.comp_ExtendedNotifications =Extended Notifications
 en.comp_ExtendedServices      =Extended Services
 en.comp_ExtendedTools         =Extended Tools
+en.comp_NetAdapters           =Network Adapters
 en.comp_NetworkTools          =Network Tools
 en.comp_OnlineChecks          =Online Checks
 en.comp_SbieSupport           =Sandboxie Support
@@ -36,12 +37,12 @@ en.comp_Updater               =Updater
 en.comp_UserNotes             =User Notes
 en.comp_WindowExplorer        =Window Explorer
 en.msg_SetupIsRunningWarning  =Process Hacker Setup is already running!
-en.msg_DeleteLogSettings      =Do you also want to delete Process Hacker's settings?%n%nIf you plan on reinstalling Process Hacker you do not have to delete them.
+en.msg_DeleteLogSettings      =Do you also want to delete Process Hacker's settings?%n%nIf you plan to reinstall Process Hacker then you do not have to delete them.
 en.msg_ServiceManager         =The service manager is not available.
 en.tsk_AllUsers               =For all users
-en.tsk_CreateKPHService       =Install KProcessHacker as a service
+en.tsk_CreateKPHService       =Install KProcessHacker driver and allow unrestricted access (not recommended)
 en.tsk_CurrentUser            =For the current user only
-en.tsk_DeleteKPHService       =Delete KProcessHacker service
+en.tsk_DeleteKPHService       =Delete KProcessHacker driver
 en.tsk_Other                  =Other tasks:
 en.tsk_RemoveStartup          =Remove Process Hacker from Windows startup
 en.tsk_ResetSettings          =Reset Process Hacker settings

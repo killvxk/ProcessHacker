@@ -2,7 +2,7 @@
  * Process Hacker Extended Services -
  *   main program
  *
- * Copyright (C) 2010-2011 wj32
+ * Copyright (C) 2010-2015 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -21,7 +21,6 @@
  */
 
 #include <phdk.h>
-#define MAIN_PRIVATE
 #include "extsrv.h"
 #include "resource.h"
 
@@ -56,6 +55,7 @@ VOID NTAPI ServiceMenuInitializingCallback(
     );
 
 PPH_PLUGIN PluginInstance;
+_RtlCreateServiceSid RtlCreateServiceSid_I;
 PH_CALLBACK_REGISTRATION PluginLoadCallbackRegistration;
 PH_CALLBACK_REGISTRATION PluginShowOptionsCallbackRegistration;
 PH_CALLBACK_REGISTRATION PluginMenuItemCallbackRegistration;
@@ -75,7 +75,7 @@ LOGICAL DllMain(
         {
             PPH_PLUGIN_INFORMATION info;
 
-            PluginInstance = PhRegisterPlugin(L"ProcessHacker.ExtendedServices", Instance, &info);
+            PluginInstance = PhRegisterPlugin(PLUGIN_NAME, Instance, &info);
 
             if (!PluginInstance)
                 return FALSE;
@@ -83,7 +83,10 @@ LOGICAL DllMain(
             info->DisplayName = L"Extended Services";
             info->Author = L"wj32";
             info->Description = L"Extends service management capabilities.";
+            info->Url = L"http://processhacker.sf.net/forums/viewtopic.php?t=1113";
             info->HasOptions = TRUE;
+
+            RtlCreateServiceSid_I = PhGetModuleProcAddress(L"ntdll.dll", "RtlCreateServiceSid");
 
             PhRegisterCallback(
                 PhGetPluginCallback(PluginInstance, PluginCallbackLoad),
@@ -245,7 +248,7 @@ VOID NTAPI ProcessMenuInitializingCallback(
         )
     {
         PPH_PROCESS_ITEM processItem;
-        PPH_EMENU_ITEM servicesMenuItem;
+        PPH_EMENU_ITEM servicesMenuItem = NULL;
         ULONG enumerationKey;
         PPH_SERVICE_ITEM serviceItem;
         PPH_LIST serviceList;
@@ -266,7 +269,7 @@ VOID NTAPI ProcessMenuInitializingCallback(
         {
             PhReferenceObject(serviceItem);
             // We need to use the service item when the user chooses a menu item.
-            PhaDereferenceObject(serviceItem);
+            PhAutoDereferenceObject(serviceItem);
             PhAddItemList(serviceList, serviceItem);
         }
 
@@ -296,7 +299,7 @@ VOID NTAPI ProcessMenuInitializingCallback(
 
             serviceItem = serviceList->Items[i];
             escapedName = PhEscapeStringForMenuPrefix(&serviceItem->Name->sr);
-            PhaDereferenceObject(escapedName);
+            PhAutoDereferenceObject(escapedName);
 
             if (serviceList->Count == 1)
             {
@@ -380,9 +383,12 @@ VOID NTAPI ProcessMenuInitializingCallback(
         // Destroy the service list (the service items were placed in the auto pool).
         PhDereferenceObject(serviceList);
 
-        // Insert our Services menu after the Priority menu.
+        // Insert our Services menu after the I/O Priority menu.
 
-        priorityMenuItem = PhFindEMenuItem(menuInfo->Menu, 0, L"Priority", 0);
+        priorityMenuItem = PhFindEMenuItem(menuInfo->Menu, 0, L"I/O Priority", 0);
+
+        if (!priorityMenuItem)
+            priorityMenuItem = PhFindEMenuItem(menuInfo->Menu, 0, L"Priority", 0);
 
         if (priorityMenuItem)
             insertIndex = PhIndexOfEMenuItem(menuInfo->Menu, priorityMenuItem) + 1;
@@ -452,6 +458,20 @@ VOID NTAPI ServicePropertiesInitializingCallback(
         propSheetPage.pszTemplate = MAKEINTRESOURCE(IDD_SRVLIST);
         propSheetPage.pszTitle = L"Dependents";
         propSheetPage.pfnDlgProc = EspServiceDependentsDlgProc;
+        propSheetPage.lParam = (LPARAM)serviceItem;
+        objectProperties->Pages[objectProperties->NumberOfPages++] = CreatePropertySheetPage(&propSheetPage);
+    }
+
+    // Other
+    if (WindowsVersion >= WINDOWS_7 && objectProperties->NumberOfPages < objectProperties->MaximumNumberOfPages)
+    {
+        memset(&propSheetPage, 0, sizeof(PROPSHEETPAGE));
+        propSheetPage.dwSize = sizeof(PROPSHEETPAGE);
+        propSheetPage.dwFlags = PSP_USETITLE;
+        propSheetPage.hInstance = PluginInstance->DllBase;
+        propSheetPage.pszTemplate = MAKEINTRESOURCE(IDD_SRVTRIGGERS);
+        propSheetPage.pszTitle = L"Triggers";
+        propSheetPage.pfnDlgProc = EspServiceTriggersDlgProc;
         propSheetPage.lParam = (LPARAM)serviceItem;
         objectProperties->Pages[objectProperties->NumberOfPages++] = CreatePropertySheetPage(&propSheetPage);
     }

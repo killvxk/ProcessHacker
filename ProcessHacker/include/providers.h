@@ -6,13 +6,12 @@
 #define PH_RECORD_MAX_USAGE
 #define PH_ENABLE_VERIFY_CACHE
 
-#ifndef PH_PROCPRV_PRIVATE
 extern PPH_OBJECT_TYPE PhProcessItemType;
 
-PHAPPAPI extern PH_CALLBACK PhProcessAddedEvent;
-PHAPPAPI extern PH_CALLBACK PhProcessModifiedEvent;
-PHAPPAPI extern PH_CALLBACK PhProcessRemovedEvent;
-PHAPPAPI extern PH_CALLBACK PhProcessesUpdatedEvent;
+PHAPPAPI extern PH_CALLBACK PhProcessAddedEvent; // phapppub
+PHAPPAPI extern PH_CALLBACK PhProcessModifiedEvent; // phapppub
+PHAPPAPI extern PH_CALLBACK PhProcessRemovedEvent; // phapppub
+PHAPPAPI extern PH_CALLBACK PhProcessesUpdatedEvent; // phapppub
 
 extern PPH_LIST PhProcessRecordList;
 extern PH_QUEUED_LOCK PhProcessRecordListLock;
@@ -76,8 +75,8 @@ extern PH_CIRCULAR_BUFFER_FLOAT PhMaxCpuUsageHistory;
 extern PH_CIRCULAR_BUFFER_ULONG64 PhMaxIoReadOtherHistory;
 extern PH_CIRCULAR_BUFFER_ULONG64 PhMaxIoWriteHistory;
 #endif
-#endif
 
+// begin_phapppub
 #define DPCS_PROCESS_ID ((HANDLE)(LONG_PTR)-2)
 #define INTERRUPTS_PROCESS_ID ((HANDLE)(LONG_PTR)-3)
 
@@ -90,10 +89,13 @@ extern PH_CIRCULAR_BUFFER_ULONG64 PhMaxIoWriteHistory;
 
 // The process item has been removed.
 #define PH_PROCESS_ITEM_REMOVED 0x1
+// end_phapppub
 
 #define PH_INTEGRITY_STR_LEN 10
 #define PH_INTEGRITY_STR_LEN_1 (PH_INTEGRITY_STR_LEN + 1)
 
+// begin_phapppub
+typedef enum _VERIFY_RESULT VERIFY_RESULT;
 typedef struct _PH_PROCESS_RECORD *PPH_PROCESS_RECORD;
 
 typedef struct _PH_PROCESS_ITEM
@@ -164,13 +166,15 @@ typedef struct _PH_PROCESS_ITEM
             ULONG IsWow64 : 1;
             ULONG IsImmersive : 1;
             ULONG IsWow64Valid : 1;
-            ULONG Spare : 20;
+            ULONG IsPartiallySuspended : 1;
+            ULONG AddedEventSent : 1;
+            ULONG Spare : 18;
         };
     };
 
     // Misc.
 
-    BOOLEAN JustProcessed;
+    ULONG JustProcessed;
     PH_EVENT Stage1Event;
 
     PPH_POINTER_LIST ServiceList;
@@ -223,8 +227,12 @@ typedef struct _PH_PROCESS_ITEM
     // New fields
     PH_UINTPTR_DELTA PrivateBytesDelta;
     PPH_STRING PackageFullName;
-} PH_PROCESS_ITEM, *PPH_PROCESS_ITEM;
 
+    PH_QUEUED_LOCK RemoveLock;
+} PH_PROCESS_ITEM, *PPH_PROCESS_ITEM;
+// end_phapppub
+
+// begin_phapppub
 // The process itself is dead.
 #define PH_PROCESS_RECORD_DEAD 0x1
 // An extra reference has been added to the process record for the statistics system.
@@ -247,41 +255,56 @@ typedef struct _PH_PROCESS_RECORD
     PPH_STRING CommandLine;
     /*PPH_STRING UserName;*/
 } PH_PROCESS_RECORD, *PPH_PROCESS_RECORD;
+// end_phapppub
 
 BOOLEAN PhProcessProviderInitialization(
     VOID
     );
 
+// begin_phapppub
 PHAPPAPI
-PPH_STRING PhGetClientIdName(
+PPH_STRING
+NTAPI
+PhGetClientIdName(
     _In_ PCLIENT_ID ClientId
     );
 
 PHAPPAPI
-PPH_STRING PhGetClientIdNameEx(
+PPH_STRING
+NTAPI
+PhGetClientIdNameEx(
     _In_ PCLIENT_ID ClientId,
     _In_opt_ PPH_STRING ProcessName
     );
 
 PHAPPAPI
-PWSTR PhGetProcessPriorityClassString(
+PWSTR
+NTAPI
+PhGetProcessPriorityClassString(
     _In_ ULONG PriorityClass
     );
+// end_phapppub
 
 PPH_PROCESS_ITEM PhCreateProcessItem(
     _In_ HANDLE ProcessId
     );
 
+// begin_phapppub
 PHAPPAPI
-PPH_PROCESS_ITEM PhReferenceProcessItem(
+PPH_PROCESS_ITEM
+NTAPI
+PhReferenceProcessItem(
     _In_ HANDLE ProcessId
     );
 
 PHAPPAPI
-VOID PhEnumProcessItems(
+VOID
+NTAPI
+PhEnumProcessItems(
     _Out_opt_ PPH_PROCESS_ITEM **ProcessItems,
     _Out_ PULONG NumberOfProcessItems
     );
+// end_phapppub
 
 typedef struct _PH_VERIFY_FILE_INFO *PPH_VERIFY_FILE_INFO;
 
@@ -298,78 +321,105 @@ VERIFY_RESULT PhVerifyFileCached(
     _In_ BOOLEAN CachedOnly
     );
 
+// begin_phapppub
 PHAPPAPI
-BOOLEAN PhGetStatisticsTime(
+BOOLEAN
+NTAPI
+PhGetStatisticsTime(
     _In_opt_ PPH_PROCESS_ITEM ProcessItem,
     _In_ ULONG Index,
     _Out_ PLARGE_INTEGER Time
     );
 
 PHAPPAPI
-PPH_STRING PhGetStatisticsTimeString(
+PPH_STRING
+NTAPI
+PhGetStatisticsTimeString(
     _In_opt_ PPH_PROCESS_ITEM ProcessItem,
     _In_ ULONG Index
+    );
+// end_phapppub
+
+VOID PhFlushProcessQueryData(
+    _In_ BOOLEAN SendModifiedEvent
     );
 
 VOID PhProcessProviderUpdate(
     _In_ PVOID Object
     );
 
+// begin_phapppub
 PHAPPAPI
-VOID PhReferenceProcessRecord(
+VOID
+NTAPI
+PhReferenceProcessRecord(
     _In_ PPH_PROCESS_RECORD ProcessRecord
     );
 
 PHAPPAPI
-BOOLEAN PhReferenceProcessRecordSafe(
+BOOLEAN
+NTAPI
+PhReferenceProcessRecordSafe(
     _In_ PPH_PROCESS_RECORD ProcessRecord
     );
 
 PHAPPAPI
-VOID PhReferenceProcessRecordForStatistics(
+VOID
+NTAPI
+PhReferenceProcessRecordForStatistics(
     _In_ PPH_PROCESS_RECORD ProcessRecord
     );
 
 PHAPPAPI
-VOID PhDereferenceProcessRecord(
+VOID
+NTAPI
+PhDereferenceProcessRecord(
     _In_ PPH_PROCESS_RECORD ProcessRecord
     );
 
 PHAPPAPI
-PPH_PROCESS_RECORD PhFindProcessRecord(
+PPH_PROCESS_RECORD
+NTAPI
+PhFindProcessRecord(
     _In_opt_ HANDLE ProcessId,
     _In_ PLARGE_INTEGER Time
     );
+// end_phapppub
 
 VOID PhPurgeProcessRecords(
     VOID
     );
 
+// begin_phapppub
 PHAPPAPI
-PPH_PROCESS_ITEM PhReferenceProcessItemForParent(
+PPH_PROCESS_ITEM
+NTAPI
+PhReferenceProcessItemForParent(
     _In_ HANDLE ParentProcessId,
     _In_ HANDLE ProcessId,
     _In_ PLARGE_INTEGER CreateTime
     );
 
 PHAPPAPI
-PPH_PROCESS_ITEM PhReferenceProcessItemForRecord(
+PPH_PROCESS_ITEM
+NTAPI
+PhReferenceProcessItemForRecord(
     _In_ PPH_PROCESS_RECORD Record
     );
+// end_phapppub
 
 // srvprv
 
-#ifndef PH_SRVPRV_PRIVATE
 extern PPH_OBJECT_TYPE PhServiceItemType;
 
-PHAPPAPI extern PH_CALLBACK PhServiceAddedEvent;
-PHAPPAPI extern PH_CALLBACK PhServiceModifiedEvent;
-PHAPPAPI extern PH_CALLBACK PhServiceRemovedEvent;
-PHAPPAPI extern PH_CALLBACK PhServicesUpdatedEvent;
+PHAPPAPI extern PH_CALLBACK PhServiceAddedEvent; // phapppub
+PHAPPAPI extern PH_CALLBACK PhServiceModifiedEvent; // phapppub
+PHAPPAPI extern PH_CALLBACK PhServiceRemovedEvent; // phapppub
+PHAPPAPI extern PH_CALLBACK PhServicesUpdatedEvent; // phapppub
 
 extern BOOLEAN PhEnableServiceNonPoll;
-#endif
 
+// begin_phapppub
 typedef struct _PH_SERVICE_ITEM
 {
     PH_STRINGREF Key; // points to Name
@@ -386,13 +436,19 @@ typedef struct _PH_SERVICE_ITEM
     // Config
     ULONG StartType;
     ULONG ErrorControl;
+// end_phapppub
+    BOOLEAN DelayedStart;
+    BOOLEAN HasTriggers;
 
     BOOLEAN PendingProcess;
     BOOLEAN NeedsConfigUpdate;
 
     WCHAR ProcessIdString[PH_INT32_STR_LEN_1];
+// begin_phapppub
 } PH_SERVICE_ITEM, *PPH_SERVICE_ITEM;
+// end_phapppub
 
+// begin_phapppub
 typedef struct _PH_SERVICE_MODIFIED_DATA
 {
     PPH_SERVICE_ITEM Service;
@@ -406,6 +462,7 @@ typedef enum _PH_SERVICE_CHANGE
     ServicePaused,
     ServiceStopped
 } PH_SERVICE_CHANGE, *PPH_SERVICE_CHANGE;
+// end_phapppub
 
 BOOLEAN PhServiceProviderInitialization(
     VOID
@@ -415,19 +472,27 @@ PPH_SERVICE_ITEM PhCreateServiceItem(
     _In_opt_ LPENUM_SERVICE_STATUS_PROCESS Information
     );
 
+// begin_phapppub
 PHAPPAPI
-PPH_SERVICE_ITEM PhReferenceServiceItem(
+PPH_SERVICE_ITEM
+NTAPI
+PhReferenceServiceItem(
     _In_ PWSTR Name
     );
+// end_phapppub
 
 VOID PhMarkNeedsConfigUpdateServiceItem(
     _In_ PPH_SERVICE_ITEM ServiceItem
     );
 
+// begin_phapppub
 PHAPPAPI
-PH_SERVICE_CHANGE PhGetServiceChange(
+PH_SERVICE_CHANGE
+NTAPI
+PhGetServiceChange(
     _In_ PPH_SERVICE_MODIFIED_DATA Data
     );
+// end_phapppub
 
 VOID PhUpdateProcessItemServices(
     _In_ PPH_PROCESS_ITEM ProcessItem
@@ -439,16 +504,15 @@ VOID PhServiceProviderUpdate(
 
 // netprv
 
-#ifndef PH_NETPRV_PRIVATE
 extern PPH_OBJECT_TYPE PhNetworkItemType;
-PHAPPAPI extern PH_CALLBACK PhNetworkItemAddedEvent;
-PHAPPAPI extern PH_CALLBACK PhNetworkItemModifiedEvent;
-PHAPPAPI extern PH_CALLBACK PhNetworkItemRemovedEvent;
-PHAPPAPI extern PH_CALLBACK PhNetworkItemsUpdatedEvent;
+PHAPPAPI extern PH_CALLBACK PhNetworkItemAddedEvent; // phapppub
+PHAPPAPI extern PH_CALLBACK PhNetworkItemModifiedEvent; // phapppub
+PHAPPAPI extern PH_CALLBACK PhNetworkItemRemovedEvent; // phapppub
+PHAPPAPI extern PH_CALLBACK PhNetworkItemsUpdatedEvent; // phapppub
 
 extern BOOLEAN PhEnableNetworkProviderResolve;
-#endif
 
+// begin_phapppub
 #define PH_NETWORK_OWNER_INFO_SIZE 16
 
 typedef struct _PH_NETWORK_ITEM
@@ -476,6 +540,7 @@ typedef struct _PH_NETWORK_ITEM
     LARGE_INTEGER CreateTime;
     ULONGLONG OwnerInfo[PH_NETWORK_OWNER_INFO_SIZE];
 } PH_NETWORK_ITEM, *PPH_NETWORK_ITEM;
+// end_phapppub
 
 BOOLEAN PhNetworkProviderInitialization(
     VOID
@@ -485,13 +550,17 @@ PPH_NETWORK_ITEM PhCreateNetworkItem(
     VOID
     );
 
+// begin_phapppub
 PHAPPAPI
-PPH_NETWORK_ITEM PhReferenceNetworkItem(
+PPH_NETWORK_ITEM
+NTAPI
+PhReferenceNetworkItem(
     _In_ ULONG ProtocolType,
     _In_ PPH_IP_ENDPOINT LocalEndpoint,
     _In_ PPH_IP_ENDPOINT RemoteEndpoint,
     _In_ HANDLE ProcessId
     );
+// end_phapppub
 
 PPH_STRING PhGetHostNameFromAddress(
     _In_ PPH_IP_ADDRESS Address
@@ -501,30 +570,35 @@ VOID PhNetworkProviderUpdate(
     _In_ PVOID Object
     );
 
+// begin_phapppub
 PHAPPAPI
-PWSTR PhGetProtocolTypeName(
+PWSTR
+NTAPI
+PhGetProtocolTypeName(
     _In_ ULONG ProtocolType
     );
 
 PHAPPAPI
-PWSTR PhGetTcpStateName(
+PWSTR
+NTAPI
+PhGetTcpStateName(
     _In_ ULONG State
     );
+// end_phapppub
 
 // modprv
 
-#ifndef PH_MODPRV_PRIVATE
 extern PPH_OBJECT_TYPE PhModuleProviderType;
 extern PPH_OBJECT_TYPE PhModuleItemType;
-#endif
 
+// begin_phapppub
 typedef struct _PH_MODULE_ITEM
 {
     PVOID BaseAddress;
     ULONG Size;
     ULONG Flags;
     ULONG Type;
-    USHORT Reserved;
+    USHORT LoadReason;
     USHORT LoadCount;
     PPH_STRING Name;
     PPH_STRING FileName;
@@ -541,6 +615,8 @@ typedef struct _PH_MODULE_ITEM
     ULONG ImageTimeDateStamp;
     USHORT ImageCharacteristics;
     USHORT ImageDllCharacteristics;
+
+    LARGE_INTEGER LoadTime;
 } PH_MODULE_ITEM, *PPH_MODULE_ITEM;
 
 typedef struct _PH_MODULE_PROVIDER
@@ -558,6 +634,7 @@ typedef struct _PH_MODULE_PROVIDER
     SLIST_HEADER QueryListHead;
     NTSTATUS RunStatus;
 } PH_MODULE_PROVIDER, *PPH_MODULE_PROVIDER;
+// end_phapppub
 
 BOOLEAN PhModuleProviderInitialization(
     VOID
@@ -586,11 +663,10 @@ VOID PhModuleProviderUpdate(
 
 // thrdprv
 
-#ifndef PH_THRDPRV_PRIVATE
 extern PPH_OBJECT_TYPE PhThreadProviderType;
 extern PPH_OBJECT_TYPE PhThreadItemType;
-#endif
 
+// begin_phapppub
 typedef struct _PH_THREAD_ITEM
 {
     HANDLE ThreadId;
@@ -610,7 +686,7 @@ typedef struct _PH_THREAD_ITEM
     ULONG64 StartAddress;
     PPH_STRING StartAddressString;
     PPH_STRING StartAddressFileName;
-    PH_SYMBOL_RESOLVE_LEVEL StartAddressResolveLevel;
+    enum _PH_SYMBOL_RESOLVE_LEVEL StartAddressResolveLevel;
     KTHREAD_STATE State;
     KWAIT_REASON WaitReason;
     LONG PriorityWin32;
@@ -639,12 +715,17 @@ typedef struct _PH_THREAD_PROVIDER
     HANDLE ProcessId;
     HANDLE ProcessHandle;
     BOOLEAN HasServices;
-    PPH_SYMBOL_PROVIDER SymbolProvider;
-    PH_EVENT SymbolsLoadedEvent;
-    LONG SymbolsLoading;
+    BOOLEAN HasServicesKnown;
+    BOOLEAN Terminating;
+    struct _PH_SYMBOL_PROVIDER *SymbolProvider;
+
     SLIST_HEADER QueryListHead;
-    ULONG RunId;
+    PH_QUEUED_LOCK LoadSymbolsLock;
+    LONG SymbolsLoading;
+    ULONG64 RunId;
+    ULONG64 SymbolsLoadedRunId;
 } PH_THREAD_PROVIDER, *PPH_THREAD_PROVIDER;
+// end_phapppub
 
 BOOLEAN PhThreadProviderInitialization(
     VOID
@@ -664,6 +745,14 @@ VOID PhUnregisterThreadProvider(
     _In_ PPH_CALLBACK_REGISTRATION CallbackRegistration
     );
 
+VOID PhSetTerminatingThreadProvider(
+    _Inout_ PPH_THREAD_PROVIDER ThreadProvider
+    );
+
+VOID PhLoadSymbolsThreadProvider(
+    _In_ PPH_THREAD_PROVIDER ThreadProvider
+    );
+
 PPH_THREAD_ITEM PhCreateThreadItem(
     _In_ HANDLE ThreadId
     );
@@ -677,10 +766,14 @@ VOID PhDereferenceAllThreadItems(
     _In_ PPH_THREAD_PROVIDER ThreadProvider
     );
 
+// begin_phapppub
 PHAPPAPI
-PPH_STRING PhGetThreadPriorityWin32String(
+PPH_STRING
+NTAPI
+PhGetThreadPriorityWin32String(
     _In_ LONG PriorityWin32
     );
+// end_phapppub
 
 VOID PhThreadProviderInitialUpdate(
     _In_ PPH_THREAD_PROVIDER ThreadProvider
@@ -688,11 +781,10 @@ VOID PhThreadProviderInitialUpdate(
 
 // hndlprv
 
-#ifndef PH_HNDLPRV_PRIVATE
 extern PPH_OBJECT_TYPE PhHandleProviderType;
 extern PPH_OBJECT_TYPE PhHandleItemType;
-#endif
 
+// begin_phapppub
 #define PH_HANDLE_FILE_SHARED_READ 0x1
 #define PH_HANDLE_FILE_SHARED_WRITE 0x2
 #define PH_HANDLE_FILE_SHARED_DELETE 0x4
@@ -735,6 +827,7 @@ typedef struct _PH_HANDLE_PROVIDER
     PPH_HASHTABLE TempListHashtable;
     NTSTATUS RunStatus;
 } PH_HANDLE_PROVIDER, *PPH_HANDLE_PROVIDER;
+// end_phapppub
 
 BOOLEAN PhHandleProviderInitialization(
     VOID
@@ -770,76 +863,148 @@ VOID PhHandleProviderUpdate(
 
 // memprv
 
-#ifndef PH_MEMPRV_PRIVATE
 extern PPH_OBJECT_TYPE PhMemoryItemType;
-#endif
+
+// begin_phapppub
+typedef enum _PH_MEMORY_REGION_TYPE
+{
+    UnknownRegion,
+    CustomRegion,
+    UnusableRegion,
+    MappedFileRegion,
+    UserSharedDataRegion,
+    PebRegion,
+    Peb32Region,
+    TebRegion,
+    Teb32Region, // Not used
+    StackRegion,
+    Stack32Region,
+    HeapRegion,
+    Heap32Region,
+    HeapSegmentRegion,
+    HeapSegment32Region
+} PH_MEMORY_REGION_TYPE;
 
 typedef struct _PH_MEMORY_ITEM
 {
-    PVOID BaseAddress;
-    ULONG_PTR Size;
-    ULONG Flags;
-    ULONG Protection;
+    LIST_ENTRY ListEntry;
+    PH_AVL_LINKS Links;
 
-    WCHAR BaseAddressString[PH_PTR_STR_LEN_1];
-    PPH_STRING Name;
+    union
+    {
+        struct
+        {
+            PVOID BaseAddress;
+            PVOID AllocationBase;
+            ULONG AllocationProtect;
+            SIZE_T RegionSize;
+            ULONG State;
+            ULONG Protect;
+            ULONG Type;
+        };
+        MEMORY_BASIC_INFORMATION BasicInfo;
+    };
+
+    struct _PH_MEMORY_ITEM *AllocationBaseItem;
+
+    SIZE_T CommittedSize;
+    SIZE_T PrivateSize;
+
+    SIZE_T TotalWorkingSetPages;
+    SIZE_T PrivateWorkingSetPages;
+    SIZE_T SharedWorkingSetPages;
+    SIZE_T ShareableWorkingSetPages;
+    SIZE_T LockedWorkingSetPages;
+
+    PH_MEMORY_REGION_TYPE RegionType;
+
+    union
+    {
+        struct
+        {
+            PPH_STRING Text;
+            BOOLEAN PropertyOfAllocationBase;
+        } Custom;
+        struct
+        {
+            PPH_STRING FileName;
+        } MappedFile;
+        struct
+        {
+            HANDLE ThreadId;
+        } Teb;
+        struct
+        {
+            HANDLE ThreadId;
+        } Stack;
+        struct
+        {
+            ULONG Index;
+        } Heap;
+        struct
+        {
+            struct _PH_MEMORY_ITEM *HeapItem;
+        } HeapSegment;
+    } u;
 } PH_MEMORY_ITEM, *PPH_MEMORY_ITEM;
 
-typedef struct _PH_MEMORY_PROVIDER *PPH_MEMORY_PROVIDER;
-
-typedef BOOLEAN (NTAPI *PPH_MEMORY_PROVIDER_CALLBACK)(
-    _In_ PPH_MEMORY_PROVIDER Provider,
-    _In_ _Assume_refs_(1) PPH_MEMORY_ITEM MemoryItem
-    );
-
-typedef struct _PH_MEMORY_PROVIDER
+typedef struct _PH_MEMORY_ITEM_LIST
 {
-    PPH_MEMORY_PROVIDER_CALLBACK Callback;
-    PVOID Context;
-
     HANDLE ProcessId;
-    HANDLE ProcessHandle;
-
-    BOOLEAN IgnoreFreeRegions;
-} PH_MEMORY_PROVIDER, *PPH_MEMORY_PROVIDER;
+    PH_AVL_TREE Set;
+    LIST_ENTRY ListHead;
+} PH_MEMORY_ITEM_LIST, *PPH_MEMORY_ITEM_LIST;
+// end_phapppub
 
 BOOLEAN PhMemoryProviderInitialization(
     VOID
     );
 
-VOID PhInitializeMemoryProvider(
-    _Out_ PPH_MEMORY_PROVIDER Provider,
-    _In_ HANDLE ProcessId,
-    _In_ PPH_MEMORY_PROVIDER_CALLBACK Callback,
-    _In_opt_ PVOID Context
+VOID PhGetMemoryProtectionString(
+    _In_ ULONG Protection,
+    _Out_writes_(17) PWSTR String
     );
 
-VOID PhDeleteMemoryProvider(
-    _Inout_ PPH_MEMORY_PROVIDER Provider
+PWSTR PhGetMemoryStateString(
+    _In_ ULONG State
+    );
+
+PWSTR PhGetMemoryTypeString(
+    _In_ ULONG Type
     );
 
 PPH_MEMORY_ITEM PhCreateMemoryItem(
     VOID
     );
 
+// begin_phapppub
 PHAPPAPI
-VOID PhGetMemoryProtectionString(
-    _In_ ULONG Protection,
-    _Out_writes_(17) PWSTR String
+VOID
+NTAPI
+PhDeleteMemoryItemList(
+    _In_ PPH_MEMORY_ITEM_LIST List
     );
 
 PHAPPAPI
-PWSTR PhGetMemoryStateString(
-    _In_ ULONG State
+PPH_MEMORY_ITEM
+NTAPI
+PhLookupMemoryItemList(
+    _In_ PPH_MEMORY_ITEM_LIST List,
+    _In_ PVOID Address
     );
+
+#define PH_QUERY_MEMORY_IGNORE_FREE 0x1
+#define PH_QUERY_MEMORY_REGION_TYPE 0x2
+#define PH_QUERY_MEMORY_WS_COUNTERS 0x4
 
 PHAPPAPI
-PWSTR PhGetMemoryTypeString(
-    _In_ ULONG Type
+NTSTATUS
+NTAPI
+PhQueryMemoryItemList(
+    _In_ HANDLE ProcessId,
+    _In_ ULONG Flags,
+    _Out_ PPH_MEMORY_ITEM_LIST List
     );
-
-VOID PhMemoryProviderUpdate(
-    _In_ PPH_MEMORY_PROVIDER Provider
-    );
+// end_phapppub
 
 #endif

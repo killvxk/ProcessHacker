@@ -350,10 +350,13 @@ VOID PhSearchMemoryString(
                 }
                 else if (printable2 && !printable1 && printable)
                 {
-                    if (length < displayBufferCount)
-                        displayBuffer[length] = byte;
+                    if (byte1 == 0)
+                    {
+                        if (length < displayBufferCount)
+                            displayBuffer[length] = byte;
 
-                    length++;
+                        length++;
+                    }
                 }
                 else if (printable2 && !printable1 && !printable)
                 {
@@ -555,7 +558,7 @@ INT_PTR CALLBACK PhpMemoryStringDlgProc(
                     PMEMORY_STRING_CONTEXT context = (PMEMORY_STRING_CONTEXT)GetProp(hwndDlg, PhMakeContextAtom());
                     ULONG64 minimumLength = 10;
 
-                    PhStringToInteger64(&PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_MINIMUMLENGTH)->sr, 0, &minimumLength);
+                    PhStringToInteger64(&PhaGetDlgItemText(hwndDlg, IDC_MINIMUMLENGTH)->sr, 0, &minimumLength);
 
                     if (minimumLength < 4)
                     {

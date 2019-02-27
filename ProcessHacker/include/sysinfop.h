@@ -1,5 +1,5 @@
-#ifndef SYSINFOP_H
-#define SYSINFOP_H
+#ifndef PH_SYSINFOP_H
+#define PH_SYSINFOP_H
 
 // Constants
 
@@ -175,13 +175,6 @@ VOID PhSipEnterSectionView(
 
 VOID PhSipRestoreSummaryView(
     VOID
-    );
-
-HWND PhSipDefaultCreateDialog(
-    _In_ PVOID Instance,
-    _In_ PWSTR Template,
-    _In_ DLGPROC DialogProc,
-    _In_ PVOID Parameter
     );
 
 VOID PhSipCreateSectionDialog(

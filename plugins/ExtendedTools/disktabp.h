@@ -143,4 +143,29 @@ VOID NTAPI EtpOnDiskItemsUpdated(
     _In_ PVOID Parameter
     );
 
+VOID NTAPI EtpSearchChangedHandler(
+    _In_opt_ PVOID Parameter,
+    _In_opt_ PVOID Context
+    );
+
+BOOLEAN NTAPI EtpSearchDiskListFilterCallback(
+    _In_ PPH_TREENEW_NODE Node,
+    _In_opt_ PVOID Context
+    );
+
+VOID NTAPI EtpToolStatusActivateContent(
+    _In_ BOOLEAN Select
+    );
+
+HWND NTAPI EtpToolStatusGetTreeNewHandle(
+    VOID
+    );
+
+INT_PTR CALLBACK EtpDiskTabErrorDialogProc(
+    _In_ HWND hwndDlg,
+    _In_ UINT uMsg,
+    _In_ WPARAM wParam,
+    _In_ LPARAM lParam
+    );
+
 #endif

@@ -40,7 +40,6 @@
 #define IDD_FINDOBJECTS                 130
 #define IDD_OBJTOKEN                    131
 #define ID_PLUGIN_MENU_ITEM             131
-#define IDD_HEAPS                       132
 #define ID_SHOWCONTEXTMENU              132
 #define IDR_PRIVILEGE                   133
 #define IDC_SEPARATOR                   133
@@ -69,7 +68,6 @@
 #define IDD_SESSION                     153
 #define IDD_PROCMEMORY                  154
 #define IDD_CHOOSE                      155
-#define IDB_COGEDIT                     156
 #define IDB_PENCIL                      157
 #define IDB_FOLDER                      158
 #define IDB_MAGNIFIER                   159
@@ -81,10 +79,7 @@
 #define IDD_CREATESERVICE               168
 #define IDD_PROCPERFORMANCE             169
 #define IDD_PROCSTATISTICS              170
-#define IDB_BRICKS                      170
-#define IDB_APPLICATION                 171
 #define IDD_OPTADVANCED                 171
-#define IDI_BLACK                       172
 #define IDR_ICON                        173
 #define IDD_GDIHANDLES                  175
 #define IDD_LOG                         178
@@ -119,6 +114,12 @@
 #define IDR_EMPTYMEMLISTS               204
 #define IDD_CONTAINER                   205
 #define IDD_SYSINFO_MEMPANELXP          206
+#define IDD_MINIINFO                    207
+#define IDB_PIN                         208
+#define IDB_COG                         209
+#define IDD_MINIINFO_LIST               210
+#define IDR_MINIINFO                    211
+#define IDR_MINIINFO_PROCESS            212
 #define IDC_TERMINATE                   1003
 #define IDC_FILEICON                    1005
 #define IDC_FILE                        1006
@@ -190,7 +191,6 @@
 #define IDC_SOURCELUID                  1060
 #define IDC_APPCONTAINERSID             1060
 #define IDC_LIST                        1061
-#define IDC_SIZESINBYTES                1062
 #define IDC_PROCESSES                   1063
 #define IDC_SCAN                        1064
 #define IDC_SAVE                        1065
@@ -289,33 +289,65 @@
 #define IDC_CPU31                       1130
 #define IDC_STATICBL1                   1130
 #define IDC_STATICBL2                   1131
+#define IDC_CPU32                       1131
 #define IDC_STATICBL3                   1132
+#define IDC_CPU33                       1132
 #define IDC_STATICBL4                   1133
+#define IDC_CPU34                       1133
 #define IDC_STATICBL5                   1134
+#define IDC_CPU35                       1134
 #define IDC_STATICBL6                   1135
+#define IDC_CPU36                       1135
 #define IDC_STATICBL7                   1136
+#define IDC_CPU37                       1136
 #define IDC_STATICBL8                   1137
+#define IDC_CPU38                       1137
 #define IDC_STATICBL9                   1138
+#define IDC_CPU39                       1138
 #define IDC_STATICBL10                  1139
+#define IDC_CPU40                       1139
 #define IDC_STATICBL11                  1140
+#define IDC_CPU41                       1140
 #define IDC_CHOICESIMPLE                1141
+#define IDC_CPU42                       1141
 #define IDC_MESSAGE                     1142
+#define IDC_CPU43                       1142
 #define IDC_SEARCHENGINE                1143
+#define IDC_CPU44                       1143
 #define IDC_MAXSIZEUNIT                 1144
+#define IDC_CPU45                       1144
 #define IDC_ALLOWONLYONEINSTANCE        1145
+#define IDC_CPU46                       1145
 #define IDC_HIDEONCLOSE                 1146
+#define IDC_CPU47                       1146
 #define IDC_ENABLEWARNINGS              1147
 #define IDC_HIDEONMINIMIZE              1147
+#define IDC_CPU48                       1147
 #define IDC_STARTHIDDEN                 1148
+#define IDC_CPU49                       1148
 #define IDC_ENABLEKERNELMODEDRIVER      1149
+#define IDC_CPU50                       1149
+#define IDC_CPU51                       1150
 #define IDC_PEVIEWER                    1151
+#define IDC_CPU52                       1151
+#define IDC_CPU53                       1152
+#define IDC_CPU54                       1153
+#define IDC_CPU55                       1154
 #define IDC_HIGHLIGHTINGDURATION        1155
+#define IDC_CPU56                       1155
+#define IDC_CPU57                       1156
 #define IDC_ENABLEALL                   1157
+#define IDC_CPU58                       1157
 #define IDC_ZACTIVEPROCESSES_V          1158
+#define IDC_CPU59                       1158
 #define IDC_ZTOTALPROCESSES_V           1159
+#define IDC_CPU60                       1159
 #define IDC_ZTERMINATEDPROCESSES_V      1160
+#define IDC_CPU61                       1160
 #define IDC_ZUSERTIME_V                 1161
+#define IDC_CPU62                       1161
 #define IDC_ZKERNELTIME_V               1162
+#define IDC_CPU63                       1162
 #define IDC_ZUSERTIMEPERIOD_V           1163
 #define IDC_ZKERNELTIMEPERIOD_V         1164
 #define IDC_ZPAGEFAULTS_V               1165
@@ -441,6 +473,7 @@
 #define IDC_ZNONPAGEDLIMIT_V            1328
 #define IDC_ZNONPAGEDALLOCSDELTA_V      1329
 #define IDC_ZNONPAGEDFREESDELTA_V       1330
+#define IDC_ZPHYSICALRESERVED_V         1331
 #define IDC_ZLISTZEROED_V               1332
 #define IDC_ZLISTFREE_V                 1333
 #define IDC_ZLISTMODIFIED_V             1334
@@ -479,13 +512,21 @@
 #define IDC_ASLRLABEL                   1363
 #define IDC_ZLISTSTANDBY4_V             1364
 #define IDC_ZLISTSTANDBY5_V             1365
+#define IDC_SELECTALL                   1365
 #define IDC_ZLISTSTANDBY6_V             1366
+#define IDC_DESELECTALL                 1366
 #define IDC_ZLISTSTANDBY7_V             1367
+#define IDC_INSPECT                     1367
 #define IDC_ZPAGINGPAGEFAULTSDELTA_V    1368
+#define IDC_HIDEFREEREGIONS             1368
 #define IDC_ZPAGINGPAGEREADSDELTA_V     1369
+#define IDC_BYTESPERROW                 1369
 #define IDC_ZPAGINGPAGEFILEWRITESDELTA_V 1370
+#define IDC_PIN                         1370
 #define IDC_ZPAGINGMAPPEDWRITESDELTA_V  1371
 #define IDC_ZLISTMODIFIEDPAGEFILE_V     1373
+#define IDC_SECTION                     1375
+#define IDC_REGEX                       1377
 #define ID_MAINWND_PROCESSTL            2001
 #define ID_MAINWND_SERVICETL            2002
 #define ID_MAINWND_NETWORKTL            2003
@@ -551,7 +592,7 @@
 #define ID_VIEW_REFRESH                 40098
 #define ID_TOOLS_CREATESERVICE          40101
 #define ID_TOOLS_HIDDENPROCESSES        40102
-#define ID_TOOLS_VERIFYFILESIGNATURE    40103
+#define ID_TOOLS_INSPECTEXECUTABLEFILE  40103
 #define ID_HELP_LOG                     40104
 #define ID_HELP_DONATE                  40105
 #define ID_HELP_ABOUT                   40106
@@ -562,6 +603,7 @@
 #define ID_SERVICE_STOP                 40111
 #define ID_SERVICE_DELETE               40112
 #define ID_SERVICE_PROPERTIES           40113
+#define ID_SERVICE_OPENKEY              40114
 #define ID_PRIVILEGE_ENABLE             40116
 #define ID_PRIVILEGE_DISABLE            40117
 #define ID_PRIVILEGE_REMOVE             40118
@@ -681,6 +723,11 @@
 #define ID_HANDLE_OBJECTPROPERTIES1     40282
 #define ID_HANDLE_OBJECTPROPERTIES2     40283
 #define ID_OBJECT_GOTOOWNINGPROCESS     40284
+#define ID_NETWORK_GOTOSERVICE          40285
+#define ID_SERVICE_OPENFILELOCATION     40286
+#define ID_PROCESS_GOTOPROCESS          40287
+#define ID_MINIINFO_REFRESH             40288
+#define ID_MINIINFO_REFRESHAUTOMATICALLY 40289
 #define IDDYNAMIC                       50000
 #define IDPLUGINS                       55000
 
@@ -688,9 +735,9 @@
 // 
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
-#define _APS_NEXT_RESOURCE_VALUE        206
-#define _APS_NEXT_COMMAND_VALUE         40285
-#define _APS_NEXT_CONTROL_VALUE         1364
-#define _APS_NEXT_SYMED_VALUE           137
+#define _APS_NEXT_RESOURCE_VALUE        214
+#define _APS_NEXT_COMMAND_VALUE         40290
+#define _APS_NEXT_CONTROL_VALUE         1378
+#define _APS_NEXT_SYMED_VALUE           169
 #endif
 #endif

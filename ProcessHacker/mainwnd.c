@@ -2,7 +2,7 @@
  * Process Hacker -
  *   main window
  *
- * Copyright (C) 2009-2013 wj32
+ * Copyright (C) 2009-2015 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -25,12 +25,16 @@
 #include <kphuser.h>
 #include <settings.h>
 #include <emenu.h>
+#include <verify.h>
+#include <phsvccl.h>
 #include <phplug.h>
 #include <cpysave.h>
-#include <mainwndp.h>
 #include <notifico.h>
 #include <memsrch.h>
 #include <symprv.h>
+#include <sysinfo.h>
+#include <miniinfo.h>
+#include <mainwndp.h>
 #include <windowsx.h>
 #include <shlobj.h>
 #include <winsta.h>
@@ -117,10 +121,18 @@ static PPH_TN_FILTER_ENTRY SignedFilterEntry = NULL;
 //static PPH_TN_FILTER_ENTRY SignedNetworkFilterEntry = NULL;
 static PPH_TN_FILTER_ENTRY DriverFilterEntry = NULL;
 
+static ULONG LastNotificationType;
+static union
+{
+    HANDLE ProcessId;
+    PPH_STRING ServiceName;
+} LastNotificationDetails;
+
 BOOLEAN PhMainWndInitialization(
     _In_ INT ShowCommand
     )
 {
+    PH_STRING_BUILDER stringBuilder;
     PH_RECTANGLE windowRectangle;
 
     if (PhGetIntegerSetting(L"FirstRun"))
@@ -151,9 +163,27 @@ BOOLEAN PhMainWndInitialization(
     windowRectangle.Position = PhGetIntegerPairSetting(L"MainWindowPosition");
     windowRectangle.Size = PhGetIntegerPairSetting(L"MainWindowSize");
 
+    // Create the window title.
+
+    PhInitializeStringBuilder(&stringBuilder, 100);
+    PhAppendStringBuilder2(&stringBuilder, L"Process Hacker");
+
+    if (PhCurrentUserName)
+    {
+        PhAppendStringBuilder2(&stringBuilder, L" [");
+        PhAppendStringBuilder(&stringBuilder, &PhCurrentUserName->sr);
+        PhAppendCharStringBuilder(&stringBuilder, ']');
+        if (KphIsConnected()) PhAppendCharStringBuilder(&stringBuilder, '+');
+    }
+
+    if (WINDOWS_HAS_UAC && PhElevationType == TokenElevationTypeFull)
+        PhAppendStringBuilder2(&stringBuilder, L" (Administrator)");
+
+    // Create the window.
+
     PhMainWndHandle = CreateWindow(
         PH_MAINWND_CLASSNAME,
-        PhApplicationName,
+        stringBuilder.String->Buffer,
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         windowRectangle.Left,
         windowRectangle.Top,
@@ -164,6 +194,7 @@ BOOLEAN PhMainWndInitialization(
         PhInstanceHandle,
         NULL
         );
+    PhDeleteStringBuilder(&stringBuilder);
     PhMainWndMenuHandle = GetMenu(PhMainWndHandle);
 
     if (!PhMainWndHandle)
@@ -183,29 +214,6 @@ BOOLEAN PhMainWndInitialization(
     if (WINDOWS_HAS_UAC)
         ChangeWindowMessageFilter_I(WM_PH_ACTIVATE, MSGFLT_ADD);
 
-    // Create the window title.
-    {
-        PH_STRING_BUILDER stringBuilder;
-
-        PhInitializeStringBuilder(&stringBuilder, 100);
-        PhAppendStringBuilder2(&stringBuilder, L"Process Hacker");
-
-        if (PhCurrentUserName)
-        {
-            PhAppendStringBuilder2(&stringBuilder, L" [");
-            PhAppendStringBuilder(&stringBuilder, PhCurrentUserName);
-            PhAppendCharStringBuilder(&stringBuilder, ']');
-            if (KphIsConnected()) PhAppendCharStringBuilder(&stringBuilder, '+');
-        }
-
-        if (WINDOWS_HAS_UAC && PhElevationType == TokenElevationTypeFull)
-            PhAppendStringBuilder2(&stringBuilder, L" (Administrator)");
-
-        SetWindowText(PhMainWndHandle, stringBuilder.String->Buffer);
-
-        PhDeleteStringBuilder(&stringBuilder);
-    }
-
     PhMwpOnSettingChange();
 
     // Initialize child controls.
@@ -222,6 +230,10 @@ BOOLEAN PhMainWndInitialization(
 
     PhStartProviderThread(&PhPrimaryProviderThread);
     PhStartProviderThread(&PhSecondaryProviderThread);
+
+    // See PhMwpOnTimer for more details.
+    if (PhCsUpdateInterval > PH_FLUSH_PROCESS_QUERY_DATA_INTERVAL_1)
+        SetTimer(PhMainWndHandle, TIMER_FLUSH_PROCESS_QUERY_DATA, PH_FLUSH_PROCESS_QUERY_DATA_INTERVAL_1, NULL);
 
     UpdateWindow(PhMainWndHandle);
 
@@ -246,10 +258,21 @@ BOOLEAN PhMainWndInitialization(
     NeedsSelectPid = PhStartupParameters.SelectPid;
 
     if (PhPluginsEnabled)
-        PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackMainWindowShowing), (PVOID)ShowCommand);
+        PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackMainWindowShowing), IntToPtr(ShowCommand));
+
+    if (PhStartupParameters.SelectTab)
+    {
+        INT tabIndex = PhMwpFindTabPageIndex(PhStartupParameters.SelectTab->Buffer);
+
+        if (tabIndex != -1)
+            PhMwpSelectTabPage(tabIndex);
+    }
 
     if (ShowCommand != SW_HIDE)
         ShowWindow(PhMainWndHandle, ShowCommand);
+
+    if (PhGetIntegerSetting(L"MiniInfoWindowPinned"))
+        PhPinMiniInformation(MiniInfoManualPinType, 1, 0, PH_MINIINFO_LOAD_POSITION, NULL, NULL);
 
     return TRUE;
 }
@@ -317,6 +340,11 @@ LRESULT CALLBACK PhMwpWndProc(
     case WM_SETFOCUS:
         {
             PhMwpOnSetFocus();
+        }
+        break;
+    case WM_TIMER:
+        {
+            PhMwpOnTimer((ULONG)wParam);
         }
         break;
     case WM_NOTIFY:
@@ -392,10 +420,25 @@ VOID PhMwpInitializeProviders(
     PhRegisterProvider(&PhPrimaryProviderThread, PhNetworkProviderUpdate, NULL, &NetworkProviderRegistration);
 }
 
+VOID PhMwpApplyUpdateInterval(
+    _In_ ULONG Interval
+    )
+{
+    PhSetIntervalProviderThread(&PhPrimaryProviderThread, Interval);
+    PhSetIntervalProviderThread(&PhSecondaryProviderThread, Interval);
+
+    if (Interval > PH_FLUSH_PROCESS_QUERY_DATA_INTERVAL_LONG_TERM)
+        SetTimer(PhMainWndHandle, TIMER_FLUSH_PROCESS_QUERY_DATA, PH_FLUSH_PROCESS_QUERY_DATA_INTERVAL_LONG_TERM, NULL);
+    else
+        KillTimer(PhMainWndHandle, TIMER_FLUSH_PROCESS_QUERY_DATA); // Might not exist
+}
+
 VOID PhMwpInitializeControls(
     VOID
     )
 {
+    ULONG thinRows;
+
     TabControlHandle = CreateWindow(
         WC_TABCONTROL,
         NULL,
@@ -416,10 +459,12 @@ VOID PhMwpInitializeControls(
     NetworkTabIndex = PhAddTabControlTab(TabControlHandle, 2, L"Network");
     MaxTabIndex = NetworkTabIndex;
 
+    thinRows = PhGetIntegerSetting(L"ThinRows") ? TN_STYLE_THIN_ROWS : 0;
+
     ProcessTreeListHandle = CreateWindow(
         PH_TREENEW_CLASSNAME,
         NULL,
-        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_BORDER | TN_STYLE_ICONS | TN_STYLE_DOUBLE_BUFFERED | TN_STYLE_ANIMATE_DIVIDER,
+        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_BORDER | TN_STYLE_ICONS | TN_STYLE_DOUBLE_BUFFERED | TN_STYLE_ANIMATE_DIVIDER | thinRows,
         0,
         0,
         3,
@@ -434,7 +479,7 @@ VOID PhMwpInitializeControls(
     ServiceTreeListHandle = CreateWindow(
         PH_TREENEW_CLASSNAME,
         NULL,
-        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_BORDER | TN_STYLE_ICONS | TN_STYLE_DOUBLE_BUFFERED,
+        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_BORDER | TN_STYLE_ICONS | TN_STYLE_DOUBLE_BUFFERED | thinRows,
         0,
         0,
         3,
@@ -449,7 +494,7 @@ VOID PhMwpInitializeControls(
     NetworkTreeListHandle = CreateWindow(
         PH_TREENEW_CLASSNAME,
         NULL,
-        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_BORDER | TN_STYLE_ICONS | TN_STYLE_DOUBLE_BUFFERED,
+        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_BORDER | TN_STYLE_ICONS | TN_STYLE_DOUBLE_BUFFERED | thinRows,
         0,
         0,
         3,
@@ -574,14 +619,16 @@ PPH_STRING PhMwpFindDbghelpPath(
         PWSTR AppendPath;
     } locations[] =
     {
-#ifdef _M_IX86
-        { CSIDL_PROGRAM_FILES, L"\\Windows Kits\\8.1\\Debuggers\\x86\\dbghelp.dll" },
-        { CSIDL_PROGRAM_FILES, L"\\Windows Kits\\8.0\\Debuggers\\x86\\dbghelp.dll" },
-        { CSIDL_PROGRAM_FILES, L"\\Debugging Tools for Windows (x86)\\dbghelp.dll" }
-#else
+#ifdef _WIN64
+        { CSIDL_PROGRAM_FILESX86, L"\\Windows Kits\\10\\Debuggers\\x64\\dbghelp.dll" },
         { CSIDL_PROGRAM_FILESX86, L"\\Windows Kits\\8.1\\Debuggers\\x64\\dbghelp.dll" },
         { CSIDL_PROGRAM_FILESX86, L"\\Windows Kits\\8.0\\Debuggers\\x64\\dbghelp.dll" },
         { CSIDL_PROGRAM_FILES, L"\\Debugging Tools for Windows (x64)\\dbghelp.dll" }
+#else
+        { CSIDL_PROGRAM_FILES, L"\\Windows Kits\\10\\Debuggers\\x86\\dbghelp.dll" },
+        { CSIDL_PROGRAM_FILES, L"\\Windows Kits\\8.1\\Debuggers\\x86\\dbghelp.dll" },
+        { CSIDL_PROGRAM_FILES, L"\\Windows Kits\\8.0\\Debuggers\\x86\\dbghelp.dll" },
+        { CSIDL_PROGRAM_FILES, L"\\Debugging Tools for Windows (x86)\\dbghelp.dll" }
 #endif
     };
 
@@ -632,8 +679,6 @@ VOID PhMwpOnSettingChange(
     VOID
     )
 {
-    PhSysWindowColor = GetSysColor(COLOR_WINDOW);
-
     if (PhApplicationFont)
         DeleteObject(PhApplicationFont);
 
@@ -738,9 +783,41 @@ VOID PhMwpOnCommand(
                 { L"All files (*.*)", L"*.*" }
             };
             PVOID fileDialog = PhCreateSaveFileDialog();
+            ULONG selectedTab = TabCtrl_GetCurSel(TabControlHandle);
+            PWSTR tabText = L"Output";
+            PPH_ADDITIONAL_TAB_PAGE selectedTabPage = NULL;
+
+            if (selectedTab == ProcessesTabIndex)
+            {
+                tabText = L"Processes";
+            }
+            else if (selectedTab == ServicesTabIndex)
+            {
+                tabText = L"Services";
+            }
+            else if (selectedTab == NetworkTabIndex)
+            {
+                tabText = L"Network";
+            }
+            else if (AdditionalTabPageList)
+            {
+                ULONG i;
+
+                for (i = 0; i < AdditionalTabPageList->Count; i++)
+                {
+                    PPH_ADDITIONAL_TAB_PAGE tabPage = AdditionalTabPageList->Items[i];
+
+                    if (tabPage->Index == selectedTab)
+                    {
+                        selectedTabPage = tabPage;
+                        tabText = selectedTabPage->Text;
+                        break;
+                    }
+                }
+            }
 
             PhSetFileDialogFilter(fileDialog, filters, sizeof(filters) / sizeof(PH_FILETYPE_FILTER));
-            PhSetFileDialogFileName(fileDialog, L"Process Hacker.txt");
+            PhSetFileDialogFileName(fileDialog, PhaFormatString(L"Process Hacker %s.txt", tabText)->Buffer);
 
             if (PhShowFileDialog(PhMainWndHandle, fileDialog))
             {
@@ -750,7 +827,7 @@ VOID PhMwpOnCommand(
                 PPH_FILE_STREAM fileStream;
 
                 fileName = PhGetFileDialogFileName(fileDialog);
-                PhaDereferenceObject(fileName);
+                PhAutoDereferenceObject(fileName);
                 filterIndex = PhGetFileDialogFilterIndex(fileDialog);
 
                 if (NT_SUCCESS(status = PhCreateFileStream(
@@ -763,16 +840,14 @@ VOID PhMwpOnCommand(
                     )))
                 {
                     ULONG mode;
-                    ULONG selectedTab;
 
                     if (filterIndex == 2)
                         mode = PH_EXPORT_MODE_CSV;
                     else
                         mode = PH_EXPORT_MODE_TABS;
 
+                    PhWriteStringAsUtf8FileStream(fileStream, &PhUnicodeByteOrderMark);
                     PhWritePhTextHeader(fileStream);
-
-                    selectedTab = TabCtrl_GetCurSel(TabControlHandle);
 
                     if (selectedTab == ProcessesTabIndex)
                     {
@@ -786,23 +861,11 @@ VOID PhMwpOnCommand(
                     {
                         PhWriteNetworkList(fileStream, mode);
                     }
-                    else if (AdditionalTabPageList)
+                    else if (selectedTabPage)
                     {
-                        ULONG i;
-
-                        for (i = 0; i < AdditionalTabPageList->Count; i++)
+                        if (selectedTabPage->SaveContentCallback)
                         {
-                            PPH_ADDITIONAL_TAB_PAGE tabPage = AdditionalTabPageList->Items[i];
-
-                            if (tabPage->Index == selectedTab)
-                            {
-                                if (tabPage->SaveContentCallback)
-                                {
-                                    tabPage->SaveContentCallback(fileStream, UlongToPtr(mode), NULL, tabPage->Context);
-                                }
-
-                                break;
-                            }
+                            selectedTabPage->SaveContentCallback(fileStream, UlongToPtr(mode), NULL, selectedTabPage->Context);
                         }
                     }
 
@@ -969,9 +1032,9 @@ VOID PhMwpOnCommand(
         {
             ULONG opacity;
 
-            opacity = 100 - ((Id - ID_OPACITY_10) + 1) * 10;
+            opacity = PH_ID_TO_OPACITY(Id);
             PhSetIntegerSetting(L"MainWindowOpacity", opacity);
-            PhMwpSetWindowOpacity(opacity);
+            PhSetWindowOpacity(PhMainWndHandle, opacity);
         }
         break;
     case ID_VIEW_REFRESH:
@@ -1008,7 +1071,7 @@ VOID PhMwpOnCommand(
             }
 
             PH_SET_INTEGER_CACHED_SETTING(UpdateInterval, interval);
-            PhApplyUpdateInterval(interval);
+            PhMwpApplyUpdateInterval(interval);
         }
         break;
     case ID_VIEW_UPDATEAUTOMATICALLY:
@@ -1032,24 +1095,7 @@ VOID PhMwpOnCommand(
             PhShowHiddenProcessesDialog();
         }
         break;
-    case ID_TOOLS_PAGEFILES:
-        {
-            PhShowPagefilesDialog(PhMainWndHandle);
-        }
-        break;
-    case ID_TOOLS_STARTTASKMANAGER:
-        {
-            PPH_STRING systemDirectory;
-            PPH_STRING taskmgrFileName;
-
-            systemDirectory = PhGetSystemDirectory();
-            taskmgrFileName = PhConcatStrings2(systemDirectory->Buffer, L"\\taskmgr.exe");
-            PhDereferenceObject(systemDirectory);
-            PhCreateProcessIgnoreIfeoDebugger(taskmgrFileName->Buffer);
-            PhDereferenceObject(taskmgrFileName);
-        }
-        break;
-    case ID_TOOLS_VERIFYFILESIGNATURE:
+    case ID_TOOLS_INSPECTEXECUTABLEFILE:
         {
             static PH_FILETYPE_FILTER filters[] =
             {
@@ -1063,35 +1109,49 @@ VOID PhMwpOnCommand(
             if (PhShowFileDialog(PhMainWndHandle, fileDialog))
             {
                 PPH_STRING fileName;
-                VERIFY_RESULT result;
-                PPH_STRING signerName;
 
                 fileName = PhGetFileDialogFileName(fileDialog);
-                result = PhVerifyFile(fileName->Buffer, &signerName);
-
-                if (result == VrTrusted)
-                {
-                    PhShowInformation(PhMainWndHandle, L"\"%s\" is trusted and signed by \"%s\".",
-                        fileName->Buffer, signerName->Buffer);
-                }
-                else if (result == VrNoSignature)
-                {
-                    PhShowInformation(PhMainWndHandle, L"\"%s\" does not have a digital signature.",
-                        fileName->Buffer);
-                }
-                else
-                {
-                    PhShowInformation(PhMainWndHandle, L"\"%s\" is not trusted.",
-                        fileName->Buffer);
-                }
-
-                if (signerName)
-                    PhDereferenceObject(signerName);
-
+                PhShellExecuteUserString(
+                    PhMainWndHandle,
+                    L"ProgramInspectExecutables",
+                    fileName->Buffer,
+                    FALSE,
+                    L"Make sure the PE Viewer executable file is present."
+                    );
                 PhDereferenceObject(fileName);
             }
 
             PhFreeFileDialog(fileDialog);
+        }
+        break;
+    case ID_TOOLS_PAGEFILES:
+        {
+            PhShowPagefilesDialog(PhMainWndHandle);
+        }
+        break;
+    case ID_TOOLS_STARTTASKMANAGER:
+        {
+            PPH_STRING systemDirectory;
+            PPH_STRING taskmgrFileName;
+
+            systemDirectory = PhGetSystemDirectory();
+            taskmgrFileName = PhConcatStrings2(systemDirectory->Buffer, L"\\taskmgr.exe");
+            PhDereferenceObject(systemDirectory);
+
+            if (WindowsVersion >= WINDOWS_8 && !PhElevated)
+            {
+                if (PhUiConnectToPhSvc(PhMainWndHandle, FALSE))
+                {
+                    PhSvcCallCreateProcessIgnoreIfeoDebugger(taskmgrFileName->Buffer);
+                    PhUiDisconnectFromPhSvc();
+                }
+            }
+            else
+            {
+                PhCreateProcessIgnoreIfeoDebugger(taskmgrFileName->Buffer);
+            }
+
+            PhDereferenceObject(taskmgrFileName);
         }
         break;
     case ID_USER_CONNECT:
@@ -1289,18 +1349,6 @@ VOID PhMwpOnCommand(
             }
         }
         break;
-    case ID_MISCELLANEOUS_HEAPS:
-        {
-            PPH_PROCESS_ITEM processItem = PhGetSelectedProcessItem();
-
-            if (processItem)
-            {
-                PhReferenceObject(processItem);
-                PhShowProcessHeapsDialog(PhMainWndHandle, processItem);
-                PhDereferenceObject(processItem);
-            }
-        }
-        break;
     case ID_MISCELLANEOUS_INJECTDLL:
         {
             PPH_PROCESS_ITEM processItem = PhGetSelectedProcessItem();
@@ -1309,39 +1357,6 @@ VOID PhMwpOnCommand(
             {
                 PhReferenceObject(processItem);
                 PhUiInjectDllProcess(PhMainWndHandle, processItem);
-                PhDereferenceObject(processItem);
-            }
-        }
-        break;
-    case ID_I_0:
-    case ID_I_1:
-    case ID_I_2:
-    case ID_I_3:
-        {
-            PPH_PROCESS_ITEM processItem = PhGetSelectedProcessItem();
-
-            if (processItem)
-            {
-                ULONG ioPriority;
-
-                switch (Id)
-                {
-                    case ID_I_0:
-                        ioPriority = 0;
-                        break;
-                    case ID_I_1:
-                        ioPriority = 1;
-                        break;
-                    case ID_I_2:
-                        ioPriority = 2;
-                        break;
-                    case ID_I_3:
-                        ioPriority = 3;
-                        break;
-                }
-
-                PhReferenceObject(processItem);
-                PhUiSetIoPriorityProcess(PhMainWndHandle, processItem, ioPriority);
                 PhDereferenceObject(processItem);
             }
         }
@@ -1437,14 +1452,29 @@ VOID PhMwpOnCommand(
     case ID_PRIORITY_BELOWNORMAL:
     case ID_PRIORITY_IDLE:
         {
-            PPH_PROCESS_ITEM processItem = PhGetSelectedProcessItem();
+            PPH_PROCESS_ITEM *processes;
+            ULONG numberOfProcesses;
 
-            if (processItem)
-            {
-                PhReferenceObject(processItem);
-                PhMwpExecuteProcessPriorityCommand(Id, processItem);
-                PhDereferenceObject(processItem);
-            }
+            PhGetSelectedProcessItems(&processes, &numberOfProcesses);
+            PhReferenceObjects(processes, numberOfProcesses);
+            PhMwpExecuteProcessPriorityCommand(Id, processes, numberOfProcesses);
+            PhDereferenceObjects(processes, numberOfProcesses);
+            PhFree(processes);
+        }
+        break;
+    case ID_I_0:
+    case ID_I_1:
+    case ID_I_2:
+    case ID_I_3:
+        {
+            PPH_PROCESS_ITEM *processes;
+            ULONG numberOfProcesses;
+
+            PhGetSelectedProcessItems(&processes, &numberOfProcesses);
+            PhReferenceObjects(processes, numberOfProcesses);
+            PhMwpExecuteProcessIoPriorityCommand(Id, processes, numberOfProcesses);
+            PhDereferenceObjects(processes, numberOfProcesses);
+            PhFree(processes);
         }
         break;
     case ID_WINDOW_BRINGTOFRONT:
@@ -1494,17 +1524,6 @@ VOID PhMwpOnCommand(
             }
         }
         break;
-    case ID_PROCESS_PROPERTIES:
-        {
-            PPH_PROCESS_ITEM processItem = PhGetSelectedProcessItem();
-
-            if (processItem)
-            {
-                // No reference needed; no messages pumped.
-                PhMwpShowProcessProperties(processItem);
-            }
-        }
-        break;
     case ID_PROCESS_OPENFILELOCATION:
         {
             PPH_PROCESS_ITEM processItem = PhGetSelectedProcessItem();
@@ -1524,6 +1543,17 @@ VOID PhMwpOnCommand(
             if (processItem)
             {
                 PhSearchOnlineString(PhMainWndHandle, processItem->ProcessName->Buffer);
+            }
+        }
+        break;
+    case ID_PROCESS_PROPERTIES:
+        {
+            PPH_PROCESS_ITEM processItem = PhGetSelectedProcessItem();
+
+            if (processItem)
+            {
+                // No reference needed; no messages pumped.
+                PhMwpShowProcessProperties(processItem);
             }
         }
         break;
@@ -1611,6 +1641,58 @@ VOID PhMwpOnCommand(
             }
         }
         break;
+    case ID_SERVICE_OPENKEY:
+        {
+            static PH_STRINGREF servicesKeyName = PH_STRINGREF_INIT(L"System\\CurrentControlSet\\Services\\");
+            static PH_STRINGREF hklm = PH_STRINGREF_INIT(L"HKLM\\");
+
+            PPH_SERVICE_ITEM serviceItem = PhGetSelectedServiceItem();
+
+            if (serviceItem)
+            {
+                HANDLE keyHandle;
+                PPH_STRING serviceKeyName = PhConcatStringRef2(&servicesKeyName, &serviceItem->Name->sr);
+
+                if (NT_SUCCESS(PhOpenKey(
+                    &keyHandle,
+                    KEY_READ,
+                    PH_KEY_LOCAL_MACHINE,
+                    &serviceKeyName->sr,
+                    0
+                    )))
+                {
+                    PPH_STRING hklmServiceKeyName;
+
+                    hklmServiceKeyName = PhConcatStringRef2(&hklm, &serviceKeyName->sr);
+                    PhShellOpenKey2(PhMainWndHandle, hklmServiceKeyName);
+                    PhDereferenceObject(hklmServiceKeyName);
+
+                    NtClose(keyHandle);
+                }
+
+                PhDereferenceObject(serviceKeyName);
+            }
+        }
+        break;
+    case ID_SERVICE_OPENFILELOCATION:
+        {
+            PPH_SERVICE_ITEM serviceItem = PhGetSelectedServiceItem();
+            SC_HANDLE serviceHandle;
+
+            if (serviceItem && (serviceHandle = PhOpenService(serviceItem->Name->Buffer, SERVICE_QUERY_CONFIG)))
+            {
+                PPH_STRING fileName;
+
+                if (fileName = PhGetServiceRelevantFileName(&serviceItem->Name->sr, serviceHandle))
+                {
+                    PhShellExploreFile(PhMainWndHandle, fileName->Buffer);
+                    PhDereferenceObject(fileName);
+                }
+
+                CloseServiceHandle(serviceHandle);
+            }
+        }
+        break;
     case ID_SERVICE_PROPERTIES:
         {
             PPH_SERVICE_ITEM serviceItem = PhGetSelectedServiceItem();
@@ -1642,6 +1724,24 @@ VOID PhMwpOnCommand(
                     PhMwpSelectTabPage(ProcessesTabIndex);
                     SetFocus(ProcessTreeListHandle);
                     PhSelectAndEnsureVisibleProcessNode(processNode);
+                }
+            }
+        }
+        break;
+    case ID_NETWORK_GOTOSERVICE:
+        {
+            PPH_NETWORK_ITEM networkItem = PhGetSelectedNetworkItem();
+            PPH_SERVICE_ITEM serviceItem;
+
+            if (networkItem && networkItem->OwnerName)
+            {
+                if (serviceItem = PhReferenceServiceItem(networkItem->OwnerName->Buffer))
+                {
+                    PhMwpSelectTabPage(ServicesTabIndex);
+                    SetFocus(ServiceTreeListHandle);
+                    ProcessHacker_SelectServiceItem(PhMainWndHandle, serviceItem);
+
+                    PhDereferenceObject(serviceItem);
                 }
             }
         }
@@ -1776,6 +1876,7 @@ VOID PhMwpOnInitMenuPopup(
 {
     ULONG i;
     BOOLEAN found;
+    MENUINFO menuInfo;
     PPH_EMENU menu;
 
     found = FALSE;
@@ -1811,6 +1912,13 @@ VOID PhMwpOnInitMenuPopup(
     if (SubMenuObjects[Index])
         PhDestroyEMenu(SubMenuObjects[Index]);
 
+    // Make sure the menu style is set correctly.
+    memset(&menuInfo, 0, sizeof(MENUINFO));
+    menuInfo.cbSize = sizeof(MENUINFO);
+    menuInfo.fMask = MIM_STYLE;
+    menuInfo.dwStyle = MNS_CHECKORBMP;
+    SetMenuInfo(Menu, &menuInfo);
+
     menu = PhCreateEMenu();
     PhLoadResourceEMenuItem(menu, PhInstanceHandle, MAKEINTRESOURCE(IDR_MAINWND), Index);
 
@@ -1820,8 +1928,7 @@ VOID PhMwpOnInitMenuPopup(
     {
         PH_PLUGIN_MENU_INFORMATION menuInfo;
 
-        menuInfo.Menu = menu;
-        menuInfo.OwnerWindow = PhMainWndHandle;
+        PhPluginInitializeMenuInfo(&menuInfo, menu, PhMainWndHandle, PH_PLUGIN_MENU_DISALLOW_HOOKS);
         menuInfo.u.MainMenu.SubMenuIndex = Index;
         PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackMainMenuInitializing), &menuInfo);
     }
@@ -1866,6 +1973,48 @@ VOID PhMwpOnSetFocus(
         SetFocus(NetworkTreeListHandle);
 }
 
+VOID PhMwpOnTimer(
+    _In_ ULONG Id
+    )
+{
+    if (Id == TIMER_FLUSH_PROCESS_QUERY_DATA)
+    {
+        static ULONG state = 1;
+
+        // If the update interval is too large, the user might have to wait a while before seeing some types of
+        // process-related data. Here we force an update.
+        //
+        // In addition, we force updates shortly after the program starts up to make things appear more quickly.
+
+        switch (state)
+        {
+        case 1:
+            state = 2;
+
+            if (PhCsUpdateInterval > PH_FLUSH_PROCESS_QUERY_DATA_INTERVAL_2)
+                SetTimer(PhMainWndHandle, TIMER_FLUSH_PROCESS_QUERY_DATA, PH_FLUSH_PROCESS_QUERY_DATA_INTERVAL_2, NULL);
+            else
+                KillTimer(PhMainWndHandle, TIMER_FLUSH_PROCESS_QUERY_DATA);
+
+            break;
+        case 2:
+            state = 3;
+
+            if (PhCsUpdateInterval > PH_FLUSH_PROCESS_QUERY_DATA_INTERVAL_LONG_TERM)
+                SetTimer(PhMainWndHandle, TIMER_FLUSH_PROCESS_QUERY_DATA, PH_FLUSH_PROCESS_QUERY_DATA_INTERVAL_LONG_TERM, NULL);
+            else
+                KillTimer(PhMainWndHandle, TIMER_FLUSH_PROCESS_QUERY_DATA);
+
+            break;
+        default:
+            NOTHING;
+            break;
+        }
+
+        PhFlushProcessQueryData(TRUE);
+    }
+}
+
 BOOLEAN PhMwpOnNotify(
     _In_ NMHDR *Header,
     _Out_ LRESULT *Result
@@ -1887,13 +2036,13 @@ BOOLEAN PhMwpOnNotify(
             PPH_STRING fullFileName;
             PPH_STRING argumentsString;
 
-            PhInitializeStringRef(&string, (PWSTR)runFileDlg->lpszFile);
+            PhInitializeStringRefLongHint(&string, (PWSTR)runFileDlg->lpszFile);
             PhParseCommandLineFuzzy(&string, &fileName, &arguments, &fullFileName);
 
             if (!fullFileName)
-                fullFileName = PhCreateStringEx(fileName.Buffer, fileName.Length);
+                fullFileName = PhCreateString2(&fileName);
 
-            argumentsString = PhCreateStringEx(arguments.Buffer, arguments.Length);
+            argumentsString = PhCreateString2(&arguments);
 
             if (PhShellExecuteEx(PhMainWndHandle, fullFileName->Buffer, argumentsString->Buffer,
                 runFileDlg->nShow, PH_SHELL_EXECUTE_ADMIN, 0, NULL))
@@ -2064,8 +2213,11 @@ ULONG_PTR PhMwpOnUserMessage(
                 showMemoryEditor->BaseAddress,
                 showMemoryEditor->RegionSize,
                 showMemoryEditor->SelectOffset,
-                showMemoryEditor->SelectLength
+                showMemoryEditor->SelectLength,
+                showMemoryEditor->Title,
+                showMemoryEditor->Flags
                 );
+            PhClearReference(&showMemoryEditor->Title);
             PhFree(showMemoryEditor);
         }
         break;
@@ -2465,7 +2617,7 @@ VOID PhMwpLoadSettings(
     opacity = PhGetIntegerSetting(L"MainWindowOpacity");
 
     if (opacity != 0)
-        PhMwpSetWindowOpacity(opacity);
+        PhSetWindowOpacity(PhMainWndHandle, opacity);
 
     PhStatisticsSampleCount = PhGetIntegerSetting(L"SampleCount");
     PhEnableProcessQueryStage2 = !!PhGetIntegerSetting(L"EnableStage2");
@@ -2535,24 +2687,19 @@ VOID PhMwpSaveWindowSettings(
         PhSetIntegerSetting(L"MainWindowState", SW_MAXIMIZE);
 }
 
-VOID PhMwpSymInitHandler(
-    _In_opt_ PVOID Parameter,
-    _In_opt_ PVOID Context
+VOID PhLoadDbgHelpFromPath(
+    _In_ PWSTR DbgHelpPath
     )
 {
-    PPH_STRING dbghelpPath;
     HMODULE dbghelpModule;
 
-    dbghelpPath = PhGetStringSetting(L"DbgHelpPath");
-
-    if (dbghelpModule = LoadLibrary(dbghelpPath->Buffer))
+    if (dbghelpModule = LoadLibrary(DbgHelpPath))
     {
         PPH_STRING fullDbghelpPath;
         ULONG indexOfFileName;
         PH_STRINGREF dbghelpFolder;
         PPH_STRING symsrvPath;
 
-        PhSymPreferredDbgHelpBase = dbghelpModule;
         fullDbghelpPath = PhGetDllFileName(dbghelpModule, &indexOfFileName);
 
         if (fullDbghelpPath)
@@ -2574,12 +2721,22 @@ VOID PhMwpSymInitHandler(
     }
     else
     {
-        LoadLibrary(L"dbghelp.dll");
+        dbghelpModule = LoadLibrary(L"dbghelp.dll");
     }
 
-    PhDereferenceObject(dbghelpPath);
+    PhSymbolProviderCompleteInitialization(dbghelpModule);
+}
 
-    PhSymbolProviderDynamicImport();
+VOID PhMwpSymInitHandler(
+    _In_opt_ PVOID Parameter,
+    _In_opt_ PVOID Context
+    )
+{
+    PPH_STRING dbghelpPath;
+
+    dbghelpPath = PhGetStringSetting(L"DbgHelpPath");
+    PhLoadDbgHelpFromPath(dbghelpPath->Buffer);
+    PhDereferenceObject(dbghelpPath);
 }
 
 VOID PhMwpUpdateLayoutPadding(
@@ -2629,32 +2786,6 @@ VOID PhMwpLayout(
     UpdateWindow(TabControlHandle);
 
     PhMwpLayoutTabControl(DeferHandle);
-}
-
-VOID PhMwpSetWindowOpacity(
-    _In_ ULONG Opacity
-    )
-{
-    if (Opacity == 0)
-    {
-        // Make things a bit faster by removing the WS_EX_LAYERED bit.
-        PhSetWindowExStyle(PhMainWndHandle, WS_EX_LAYERED, 0);
-        RedrawWindow(PhMainWndHandle, NULL, NULL, RDW_ERASE | RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
-        return;
-    }
-
-    PhSetWindowExStyle(PhMainWndHandle, WS_EX_LAYERED, WS_EX_LAYERED);
-
-    // Disallow opacity values of less than 10%.
-    if (Opacity > 90)
-        return;
-
-    SetLayeredWindowAttributes(
-        PhMainWndHandle,
-        0,
-        (BYTE)(255 * (100 - Opacity) / 100),
-        LWA_ALPHA
-        );
 }
 
 VOID PhMwpSetupComputerMenu(
@@ -2760,11 +2891,15 @@ VOID PhMwpDispatchMenuCommand(
     case ID_PLUGIN_MENU_ITEM:
         {
             PPH_EMENU_ITEM menuItem;
+            PH_PLUGIN_MENU_INFORMATION menuInfo;
 
             menuItem = (PPH_EMENU_ITEM)ItemData;
 
             if (menuItem)
-                PhPluginTriggerEMenuItem(PhMainWndHandle, menuItem);
+            {
+                PhPluginInitializeMenuInfo(&menuInfo, NULL, PhMainWndHandle, 0);
+                PhPluginTriggerEMenuItem(&menuInfo, menuItem);
+            }
 
             return;
         }
@@ -2825,6 +2960,35 @@ ULONG_PTR PhMwpLegacyAddPluginMenuItem(
     return TRUE;
 }
 
+HBITMAP PhMwpGetShieldBitmap(
+    VOID
+    )
+{
+    static HBITMAP shieldBitmap = NULL;
+
+    if (!shieldBitmap)
+    {
+        _LoadIconMetric loadIconMetric;
+        HICON shieldIcon = NULL;
+
+        // It is necessary to use LoadIconMetric because otherwise the icons are at the wrong
+        // resolution and look very bad when scaled down to the small icon size.
+
+        loadIconMetric = (_LoadIconMetric)PhGetModuleProcAddress(L"comctl32.dll", "LoadIconMetric");
+
+        if (loadIconMetric)
+        {
+            if (SUCCEEDED(loadIconMetric(NULL, IDI_SHIELD, LIM_SMALL, &shieldIcon)))
+            {
+                shieldBitmap = PhIconToBitmap(shieldIcon, PhSmallIconSize.X, PhSmallIconSize.Y);
+                DestroyIcon(shieldIcon);
+            }
+        }
+    }
+
+    return shieldBitmap;
+}
+
 VOID PhMwpInitializeSubMenu(
     _In_ PPH_EMENU Menu,
     _In_ ULONG Index
@@ -2844,29 +3008,9 @@ VOID PhMwpInitializeSubMenu(
         }
         else
         {
-            static HBITMAP shieldBitmap = NULL;
+            HBITMAP shieldBitmap;
 
-            if (!shieldBitmap)
-            {
-                _LoadIconMetric loadIconMetric;
-                HICON shieldIcon = NULL;
-
-                // It is necessary to use LoadIconMetric because otherwise the icons are at the wrong
-                // resolution and look very bad when scaled down to the small icon size.
-
-                loadIconMetric = (_LoadIconMetric)PhGetProcAddress(L"comctl32.dll", "LoadIconMetric");
-
-                if (loadIconMetric)
-                {
-                    if (SUCCEEDED(loadIconMetric(NULL, IDI_SHIELD, LIM_SMALL, &shieldIcon)))
-                    {
-                        shieldBitmap = PhIconToBitmap(shieldIcon, PhSmallIconSize.X, PhSmallIconSize.Y);
-                        DestroyIcon(shieldIcon);
-                    }
-                }
-            }
-
-            if (shieldBitmap)
+            if (shieldBitmap = PhMwpGetShieldBitmap())
             {
                 if (menuItem = PhFindEMenuItem(Menu, 0, NULL, ID_HACKER_SHOWDETAILSFORALLPROCESSES))
                     menuItem->Bitmap = shieldBitmap;
@@ -2945,12 +3089,9 @@ VOID PhMwpInitializeSubMenu(
                     {
                         PPH_STRING newText;
 
-                        if (menuItem->Text && (menuItem->Flags & PH_EMENU_TEXT_OWNED))
-                            PhFree(menuItem->Text);
-
                         newText = PhaConcatStrings2(icon->Text, L" (Unavailable)");
-                        menuItem->Text = PhAllocateCopy(newText->Buffer, newText->Length + sizeof(WCHAR));
-                        menuItem->Flags |= PH_EMENU_TEXT_OWNED;
+                        PhModifyEMenuItem(menuItem, PH_EMENU_MODIFY_TEXT, PH_EMENU_TEXT_OWNED,
+                            PhAllocateCopy(newText->Buffer, newText->Length + sizeof(WCHAR)), NULL);
                     }
                 }
             }
@@ -2965,8 +3106,7 @@ VOID PhMwpInitializeSubMenu(
         if (AlwaysOnTop && (menuItem = PhFindEMenuItem(Menu, 0, NULL, ID_VIEW_ALWAYSONTOP)))
             menuItem->Flags |= PH_EMENU_CHECKED;
 
-        // The opacity setting is stored backwards - 0 means opaque, 100 means transparent.
-        id = ID_OPACITY_10 + (10 - PhGetIntegerSetting(L"MainWindowOpacity") / 10) - 1;
+        id = PH_OPACITY_TO_ID(PhGetIntegerSetting(L"MainWindowOpacity"));
 
         if (menuItem = PhFindEMenuItem(Menu, PH_EMENU_FIND_DESCEND, NULL, id))
             menuItem->Flags |= PH_EMENU_CHECKED | PH_EMENU_RADIOCHECK;
@@ -3001,7 +3141,7 @@ VOID PhMwpInitializeSubMenu(
     }
     else if (Index == 2) // Tools
     {
-#ifdef _M_X64
+#ifdef _WIN64
         if (menuItem = PhFindEMenuItem(Menu, 0, NULL, ID_TOOLS_HIDDENPROCESSES))
             PhDestroyEMenuItem(menuItem);
 #endif
@@ -3009,8 +3149,13 @@ VOID PhMwpInitializeSubMenu(
         // Windows 8 Task Manager requires elevation.
         if (WindowsVersion >= WINDOWS_8 && !PhElevated)
         {
-            if (menuItem = PhFindEMenuItem(Menu, 0, NULL, ID_TOOLS_STARTTASKMANAGER))
-                PhDestroyEMenuItem(menuItem);
+            HBITMAP shieldBitmap;
+
+            if (shieldBitmap = PhMwpGetShieldBitmap())
+            {
+                if (menuItem = PhFindEMenuItem(Menu, 0, NULL, ID_TOOLS_STARTTASKMANAGER))
+                    menuItem->Bitmap = shieldBitmap;
+            }
         }
     }
 
@@ -3148,7 +3293,7 @@ VOID PhMwpInitializeSectionMenuItems(
             {
                 if (tabPage->InitializeSectionMenuItemsCallback)
                 {
-                    tabPage->InitializeSectionMenuItemsCallback(Menu, (PVOID)StartIndex, NULL, tabPage->Context);
+                    tabPage->InitializeSectionMenuItemsCallback(Menu, UlongToPtr(StartIndex), NULL, tabPage->Context);
                 }
                 else
                 {
@@ -3312,7 +3457,7 @@ VOID PhMwpSelectionChangedTabControl(
     }
 
     if (PhPluginsEnabled)
-        PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackMainWindowTabChanged), (PVOID)selectedIndex);
+        PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackMainWindowTabChanged), IntToPtr(selectedIndex));
 }
 
 PPH_ADDITIONAL_TAB_PAGE PhMwpAddTabPage(
@@ -3353,6 +3498,38 @@ VOID PhMwpSelectTabPage(
     PhMwpSelectionChangedTabControl(oldIndex);
 }
 
+INT PhMwpFindTabPageIndex(
+    _In_ PWSTR Text
+    )
+{
+    if (PhEqualStringZ(Text, L"Processes", TRUE))
+    {
+        return ProcessesTabIndex;
+    }
+    else if (PhEqualStringZ(Text, L"Services", TRUE))
+    {
+        return ServicesTabIndex;
+    }
+    else if (PhEqualStringZ(Text, L"Network", TRUE))
+    {
+        return NetworkTabIndex;
+    }
+    else if (AdditionalTabPageList)
+    {
+        ULONG i;
+
+        for (i = 0; i < AdditionalTabPageList->Count; i++)
+        {
+            PPH_ADDITIONAL_TAB_PAGE tabPage = AdditionalTabPageList->Items[i];
+
+            if (PhEqualStringZ(tabPage->Text, Text, TRUE))
+                return tabPage->Index;
+        }
+    }
+
+    return -1;
+}
+
 static int __cdecl IconProcessesCpuUsageCompare(
     _In_ const void *elem1,
     _In_ const void *elem2
@@ -3373,6 +3550,151 @@ static int __cdecl IconProcessesNameCompare(
     PPH_PROCESS_ITEM processItem2 = *(PPH_PROCESS_ITEM *)elem2;
 
     return PhCompareString(processItem1->ProcessName, processItem2->ProcessName, TRUE);
+}
+
+VOID PhAddMiniProcessMenuItems(
+    _Inout_ struct _PH_EMENU_ITEM *Menu,
+    _In_ HANDLE ProcessId
+    )
+{
+    PPH_EMENU_ITEM priorityMenu;
+    PPH_EMENU_ITEM ioPriorityMenu = NULL;
+    PPH_PROCESS_ITEM processItem;
+    BOOLEAN isSuspended = FALSE;
+    BOOLEAN isPartiallySuspended = TRUE;
+
+    // Priority
+
+    priorityMenu = PhCreateEMenuItem(0, 0, L"Priority", NULL, ProcessId);
+
+    PhInsertEMenuItem(priorityMenu, PhCreateEMenuItem(0, ID_PRIORITY_REALTIME, L"Real Time", NULL, ProcessId), -1);
+    PhInsertEMenuItem(priorityMenu, PhCreateEMenuItem(0, ID_PRIORITY_HIGH, L"High", NULL, ProcessId), -1);
+    PhInsertEMenuItem(priorityMenu, PhCreateEMenuItem(0, ID_PRIORITY_ABOVENORMAL, L"Above Normal", NULL, ProcessId), -1);
+    PhInsertEMenuItem(priorityMenu, PhCreateEMenuItem(0, ID_PRIORITY_NORMAL, L"Normal", NULL, ProcessId), -1);
+    PhInsertEMenuItem(priorityMenu, PhCreateEMenuItem(0, ID_PRIORITY_BELOWNORMAL, L"Below Normal", NULL, ProcessId), -1);
+    PhInsertEMenuItem(priorityMenu, PhCreateEMenuItem(0, ID_PRIORITY_IDLE, L"Idle", NULL, ProcessId), -1);
+
+    // I/O Priority
+
+    if (WindowsVersion >= WINDOWS_VISTA)
+    {
+        ioPriorityMenu = PhCreateEMenuItem(0, 0, L"I/O Priority", NULL, ProcessId);
+
+        PhInsertEMenuItem(ioPriorityMenu, PhCreateEMenuItem(0, ID_I_3, L"High", NULL, ProcessId), -1);
+        PhInsertEMenuItem(ioPriorityMenu, PhCreateEMenuItem(0, ID_I_2, L"Normal", NULL, ProcessId), -1);
+        PhInsertEMenuItem(ioPriorityMenu, PhCreateEMenuItem(0, ID_I_1, L"Low", NULL, ProcessId), -1);
+        PhInsertEMenuItem(ioPriorityMenu, PhCreateEMenuItem(0, ID_I_0, L"Very Low", NULL, ProcessId), -1);
+    }
+
+    // Menu
+
+    PhInsertEMenuItem(Menu, PhCreateEMenuItem(0, ID_PROCESS_TERMINATE, L"T&erminate", NULL, ProcessId), -1);
+
+    if (processItem = PhReferenceProcessItem(ProcessId))
+    {
+        isSuspended = (BOOLEAN)processItem->IsSuspended;
+        isPartiallySuspended = (BOOLEAN)processItem->IsPartiallySuspended;
+        PhDereferenceObject(processItem);
+    }
+
+    if (!isSuspended)
+        PhInsertEMenuItem(Menu, PhCreateEMenuItem(0, ID_PROCESS_SUSPEND, L"&Suspend", NULL, ProcessId), -1);
+    if (isPartiallySuspended)
+        PhInsertEMenuItem(Menu, PhCreateEMenuItem(0, ID_PROCESS_RESUME, L"Res&ume", NULL, ProcessId), -1);
+
+    PhInsertEMenuItem(Menu, priorityMenu, -1);
+
+    if (ioPriorityMenu)
+        PhInsertEMenuItem(Menu, ioPriorityMenu, -1);
+
+    PhMwpSetProcessMenuPriorityChecks(Menu, ProcessId, TRUE, TRUE, FALSE);
+
+    PhInsertEMenuItem(Menu, PhCreateEMenuItem(0, ID_PROCESS_PROPERTIES, L"P&roperties", NULL, ProcessId), -1);
+}
+
+BOOLEAN PhHandleMiniProcessMenuItem(
+    _Inout_ struct _PH_EMENU_ITEM *MenuItem
+    )
+{
+    switch (MenuItem->Id)
+    {
+    case ID_PROCESS_TERMINATE:
+    case ID_PROCESS_SUSPEND:
+    case ID_PROCESS_RESUME:
+    case ID_PROCESS_PROPERTIES:
+        {
+            HANDLE processId = MenuItem->Context;
+            PPH_PROCESS_ITEM processItem;
+
+            if (processItem = PhReferenceProcessItem(processId))
+            {
+                switch (MenuItem->Id)
+                {
+                case ID_PROCESS_TERMINATE:
+                    PhUiTerminateProcesses(PhMainWndHandle, &processItem, 1);
+                    break;
+                case ID_PROCESS_SUSPEND:
+                    PhUiSuspendProcesses(PhMainWndHandle, &processItem, 1);
+                    break;
+                case ID_PROCESS_RESUME:
+                    PhUiResumeProcesses(PhMainWndHandle, &processItem, 1);
+                    break;
+                case ID_PROCESS_PROPERTIES:
+                    ProcessHacker_ShowProcessProperties(PhMainWndHandle, processItem);
+                    break;
+                }
+
+                PhDereferenceObject(processItem);
+            }
+            else
+            {
+                PhShowError(PhMainWndHandle, L"The process does not exist.");
+            }
+        }
+        break;
+    case ID_PRIORITY_REALTIME:
+    case ID_PRIORITY_HIGH:
+    case ID_PRIORITY_ABOVENORMAL:
+    case ID_PRIORITY_NORMAL:
+    case ID_PRIORITY_BELOWNORMAL:
+    case ID_PRIORITY_IDLE:
+        {
+            HANDLE processId = MenuItem->Context;
+            PPH_PROCESS_ITEM processItem;
+
+            if (processItem = PhReferenceProcessItem(processId))
+            {
+                PhMwpExecuteProcessPriorityCommand(MenuItem->Id, &processItem, 1);
+                PhDereferenceObject(processItem);
+            }
+            else
+            {
+                PhShowError(PhMainWndHandle, L"The process does not exist.");
+            }
+        }
+        break;
+    case ID_I_3:
+    case ID_I_2:
+    case ID_I_1:
+    case ID_I_0:
+        {
+            HANDLE processId = MenuItem->Context;
+            PPH_PROCESS_ITEM processItem;
+
+            if (processItem = PhReferenceProcessItem(processId))
+            {
+                PhMwpExecuteProcessIoPriorityCommand(MenuItem->Id, &processItem, 1);
+                PhDereferenceObject(processItem);
+            }
+            else
+            {
+                PhShowError(PhMainWndHandle, L"The process does not exist.");
+            }
+        }
+        break;
+    }
+
+    return FALSE;
 }
 
 VOID PhMwpAddIconProcesses(
@@ -3437,26 +3759,12 @@ VOID PhMwpAddIconProcesses(
     for (i = 0; i < processList->Count; i++)
     {
         PPH_EMENU_ITEM subMenu;
-        PPH_EMENU_ITEM priorityMenu;
         HBITMAP iconBitmap;
         CLIENT_ID clientId;
         PPH_STRING clientIdName;
         PPH_STRING escapedName;
 
         processItem = processList->Items[i];
-
-        // Priority
-
-        priorityMenu = PhCreateEMenuItem(0, 0, L"Priority", NULL, NULL);
-
-        PhInsertEMenuItem(priorityMenu, PhCreateEMenuItem(0, ID_PRIORITY_REALTIME, L"Real Time", NULL, NULL), -1);
-        PhInsertEMenuItem(priorityMenu, PhCreateEMenuItem(0, ID_PRIORITY_HIGH, L"High", NULL, NULL), -1);
-        PhInsertEMenuItem(priorityMenu, PhCreateEMenuItem(0, ID_PRIORITY_ABOVENORMAL, L"Above Normal", NULL, NULL), -1);
-        PhInsertEMenuItem(priorityMenu, PhCreateEMenuItem(0, ID_PRIORITY_NORMAL, L"Normal", NULL, NULL), -1);
-        PhInsertEMenuItem(priorityMenu, PhCreateEMenuItem(0, ID_PRIORITY_BELOWNORMAL, L"Below Normal", NULL, NULL), -1);
-        PhInsertEMenuItem(priorityMenu, PhCreateEMenuItem(0, ID_PRIORITY_IDLE, L"Idle", NULL, NULL), -1);
-
-        PhMwpSetProcessMenuPriorityChecks(priorityMenu, processItem, TRUE, FALSE, FALSE);
 
         // Process
 
@@ -3466,7 +3774,7 @@ VOID PhMwpAddIconProcesses(
         clientIdName = PhGetClientIdName(&clientId);
         escapedName = PhEscapeStringForMenuPrefix(&clientIdName->sr);
         PhDereferenceObject(clientIdName);
-        PhaDereferenceObject(escapedName);
+        PhAutoDereferenceObject(escapedName);
 
         subMenu = PhCreateEMenuItem(
             0,
@@ -3476,35 +3784,22 @@ VOID PhMwpAddIconProcesses(
             processItem->ProcessId
             );
 
-        // Menu icons only work properly on Vista and above.
-        if (WindowsVersion >= WINDOWS_VISTA)
+        if (processItem->SmallIcon)
         {
-            if (processItem->SmallIcon)
-            {
-                iconBitmap = PhIconToBitmap(processItem->SmallIcon, PhSmallIconSize.X, PhSmallIconSize.Y);
-            }
-            else
-            {
-                HICON icon;
-
-                PhGetStockApplicationIcon(&icon, NULL);
-                iconBitmap = PhIconToBitmap(icon, PhSmallIconSize.X, PhSmallIconSize.Y);
-            }
+            iconBitmap = PhIconToBitmap(processItem->SmallIcon, PhSmallIconSize.X, PhSmallIconSize.Y);
         }
         else
         {
-            iconBitmap = NULL;
+            HICON icon;
+
+            PhGetStockApplicationIcon(&icon, NULL);
+            iconBitmap = PhIconToBitmap(icon, PhSmallIconSize.X, PhSmallIconSize.Y);
         }
 
         subMenu->Bitmap = iconBitmap;
         subMenu->Flags |= PH_EMENU_BITMAP_OWNED; // automatically destroy the bitmap when necessary
 
-        PhInsertEMenuItem(subMenu, PhCreateEMenuItem(0, ID_PROCESS_TERMINATE, L"Terminate", NULL, NULL), -1);
-        PhInsertEMenuItem(subMenu, PhCreateEMenuItem(0, ID_PROCESS_SUSPEND, L"Suspend", NULL, NULL), -1);
-        PhInsertEMenuItem(subMenu, PhCreateEMenuItem(0, ID_PROCESS_RESUME, L"Resume", NULL, NULL), -1);
-        PhInsertEMenuItem(subMenu, priorityMenu, -1);
-        PhInsertEMenuItem(subMenu, PhCreateEMenuItem(0, ID_PROCESS_PROPERTIES, L"Properties", NULL, NULL), -1);
-
+        PhAddMiniProcessMenuItems(subMenu, processItem->ProcessId);
         PhInsertEMenuItem(Menu, subMenu, -1);
     }
 
@@ -3519,6 +3814,7 @@ VOID PhShowIconContextMenu(
 {
     PPH_EMENU menu;
     PPH_EMENU_ITEM item;
+    PH_PLUGIN_MENU_INFORMATION menuInfo;
     ULONG numberOfProcesses;
     ULONG id;
     ULONG i;
@@ -3578,11 +3874,7 @@ VOID PhShowIconContextMenu(
 
     if (PhPluginsEnabled)
     {
-        PH_PLUGIN_MENU_INFORMATION menuInfo;
-
-        menuInfo.Menu = menu;
-        menuInfo.OwnerWindow = PhMainWndHandle;
-
+        PhPluginInitializeMenuInfo(&menuInfo, menu, PhMainWndHandle, 0);
         PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackIconMenuInitializing), &menuInfo);
     }
 
@@ -3598,22 +3890,13 @@ VOID PhShowIconContextMenu(
 
     if (item)
     {
-        PPH_EMENU_ITEM parentItem;
-        HANDLE processId;
         BOOLEAN handled = FALSE;
 
-        parentItem = item->Parent;
-
-        while (parentItem)
-        {
-            if (parentItem->Context)
-                processId = parentItem->Context;
-
-            parentItem = parentItem->Parent;
-        }
-
         if (PhPluginsEnabled && !handled)
-            handled = PhPluginTriggerEMenuItem(PhMainWndHandle, item);
+            handled = PhPluginTriggerEMenuItem(&menuInfo, item);
+
+        if (!handled)
+            handled = PhHandleMiniProcessMenuItem(item);
 
         if (!handled)
             handled = PhMwpExecuteComputerCommand(item->Id);
@@ -3668,59 +3951,6 @@ VOID PhShowIconContextMenu(
                     NotifyIconNotifyMask ^= bit;
                 }
                 break;
-            case ID_PROCESS_TERMINATE:
-            case ID_PROCESS_SUSPEND:
-            case ID_PROCESS_RESUME:
-            case ID_PROCESS_PROPERTIES:
-                {
-                    PPH_PROCESS_ITEM processItem;
-
-                    if (processItem = PhReferenceProcessItem(processId))
-                    {
-                        switch (item->Id)
-                        {
-                        case ID_PROCESS_TERMINATE:
-                            PhUiTerminateProcesses(PhMainWndHandle, &processItem, 1);
-                            break;
-                        case ID_PROCESS_SUSPEND:
-                            PhUiSuspendProcesses(PhMainWndHandle, &processItem, 1);
-                            break;
-                        case ID_PROCESS_RESUME:
-                            PhUiResumeProcesses(PhMainWndHandle, &processItem, 1);
-                            break;
-                        case ID_PROCESS_PROPERTIES:
-                            ProcessHacker_ShowProcessProperties(PhMainWndHandle, processItem);
-                            break;
-                        }
-
-                        PhDereferenceObject(processItem);
-                    }
-                    else
-                    {
-                        PhShowError(PhMainWndHandle, L"The process does not exist.");
-                    }
-                }
-                break;
-            case ID_PRIORITY_REALTIME:
-            case ID_PRIORITY_HIGH:
-            case ID_PRIORITY_ABOVENORMAL:
-            case ID_PRIORITY_NORMAL:
-            case ID_PRIORITY_BELOWNORMAL:
-            case ID_PRIORITY_IDLE:
-                {
-                    PPH_PROCESS_ITEM processItem;
-
-                    if (processItem = PhReferenceProcessItem(processId))
-                    {
-                        PhMwpExecuteProcessPriorityCommand(item->Id, processItem);
-                        PhDereferenceObject(processItem);
-                    }
-                    else
-                    {
-                        PhShowError(PhMainWndHandle, L"The process does not exist.");
-                    }
-                }
-                break;
             case ID_ICON_EXIT:
                 SendMessage(PhMainWndHandle, WM_COMMAND, ID_HACKER_EXIT, 0);
                 break;
@@ -3738,6 +3968,58 @@ VOID PhShowIconNotification(
     )
 {
     PhNfShowBalloonTip(0, Title, Text, 10, Flags);
+}
+
+VOID PhShowDetailsForIconNotification(
+    VOID
+    )
+{
+    switch (LastNotificationType)
+    {
+    case PH_NOTIFY_PROCESS_CREATE:
+        {
+            PPH_PROCESS_NODE processNode;
+
+            if (processNode = PhFindProcessNode(LastNotificationDetails.ProcessId))
+            {
+                ProcessHacker_SelectTabPage(PhMainWndHandle, ProcessesTabIndex);
+                ProcessHacker_SelectProcessNode(PhMainWndHandle, processNode);
+                ProcessHacker_ToggleVisible(PhMainWndHandle, TRUE);
+            }
+        }
+        break;
+    case PH_NOTIFY_SERVICE_CREATE:
+    case PH_NOTIFY_SERVICE_START:
+    case PH_NOTIFY_SERVICE_STOP:
+        {
+            PPH_SERVICE_ITEM serviceItem;
+
+            if (LastNotificationDetails.ServiceName &&
+                (serviceItem = PhReferenceServiceItem(LastNotificationDetails.ServiceName->Buffer)))
+            {
+                ProcessHacker_SelectTabPage(PhMainWndHandle, ServicesTabIndex);
+                ProcessHacker_SelectServiceItem(PhMainWndHandle, serviceItem);
+                ProcessHacker_ToggleVisible(PhMainWndHandle, TRUE);
+
+                PhDereferenceObject(serviceItem);
+            }
+        }
+        break;
+    }
+}
+
+VOID PhMwpClearLastNotificationDetails(
+    VOID
+    )
+{
+    if (LastNotificationType &
+        (PH_NOTIFY_SERVICE_CREATE | PH_NOTIFY_SERVICE_DELETE | PH_NOTIFY_SERVICE_START | PH_NOTIFY_SERVICE_STOP))
+    {
+        PhClearReference(&LastNotificationDetails.ServiceName);
+    }
+
+    LastNotificationType = 0;
+    memset(&LastNotificationDetails, 0, sizeof(LastNotificationDetails));
 }
 
 BOOLEAN PhMwpPluginNotifyEvent(
@@ -3808,7 +4090,8 @@ BOOLEAN PhMwpSignedProcessTreeFilter(
 
 BOOLEAN PhMwpExecuteProcessPriorityCommand(
     _In_ ULONG Id,
-    _In_ PPH_PROCESS_ITEM ProcessItem
+    _In_ PPH_PROCESS_ITEM *Processes,
+    _In_ ULONG NumberOfProcesses
     )
 {
     ULONG priorityClass;
@@ -3837,14 +4120,45 @@ BOOLEAN PhMwpExecuteProcessPriorityCommand(
         return FALSE;
     }
 
-    PhUiSetPriorityProcess(PhMainWndHandle, ProcessItem, priorityClass);
+    PhUiSetPriorityProcesses(PhMainWndHandle, Processes, NumberOfProcesses, priorityClass);
+
+    return TRUE;
+}
+
+BOOLEAN PhMwpExecuteProcessIoPriorityCommand(
+    _In_ ULONG Id,
+    _In_ PPH_PROCESS_ITEM *Processes,
+    _In_ ULONG NumberOfProcesses
+    )
+{
+    ULONG ioPriority;
+
+    switch (Id)
+    {
+    case ID_I_0:
+        ioPriority = 0;
+        break;
+    case ID_I_1:
+        ioPriority = 1;
+        break;
+    case ID_I_2:
+        ioPriority = 2;
+        break;
+    case ID_I_3:
+        ioPriority = 3;
+        break;
+    default:
+        return FALSE;
+    }
+
+    PhUiSetIoPriorityProcesses(PhMainWndHandle, Processes, NumberOfProcesses, ioPriority);
 
     return TRUE;
 }
 
 VOID PhMwpSetProcessMenuPriorityChecks(
     _In_ PPH_EMENU Menu,
-    _In_ PPH_PROCESS_ITEM Process,
+    _In_ HANDLE ProcessId,
     _In_ BOOLEAN SetPriority,
     _In_ BOOLEAN SetIoPriority,
     _In_ BOOLEAN SetPagePriority
@@ -3859,7 +4173,7 @@ VOID PhMwpSetProcessMenuPriorityChecks(
     if (NT_SUCCESS(PhOpenProcess(
         &processHandle,
         ProcessQueryAccess,
-        Process->ProcessId
+        ProcessId
         )))
     {
         if (SetPriority)
@@ -3984,32 +4298,6 @@ VOID PhMwpSetProcessMenuPriorityChecks(
     }
 }
 
-static BOOL CALLBACK EnumProcessWindowsProc(
-    _In_ HWND hwnd,
-    _In_ LPARAM lParam
-    )
-{
-    ULONG processId;
-    HWND parentWindow;
-
-    if (!IsWindowVisible(hwnd))
-        return TRUE;
-
-    GetWindowThreadProcessId(hwnd, &processId);
-
-    if (
-        processId == (ULONG)lParam &&
-        !((parentWindow = GetParent(hwnd)) && IsWindowVisible(parentWindow)) && // skip windows with a visible parent
-        GetWindowTextLength(hwnd) != 0
-        )
-    {
-        SelectedProcessWindowHandle = hwnd;
-        return FALSE;
-    }
-
-    return TRUE;
-}
-
 VOID PhMwpInitializeProcessMenu(
     _In_ PPH_EMENU Menu,
     _In_ PPH_PROCESS_ITEM *Processes,
@@ -4056,6 +4344,14 @@ VOID PhMwpInitializeProcessMenu(
             PhSetFlagsAllEMenuItems(item, PH_EMENU_DISABLED, PH_EMENU_DISABLED);
         }
 
+        // Enable the Priority menu item.
+        if (item = PhFindEMenuItem(Menu, 0, L"Priority", 0))
+            item->Flags &= ~PH_EMENU_DISABLED;
+
+        // Enable the I/O Priority menu item.
+        if (item = PhFindEMenuItem(Menu, 0, L"I/O Priority", 0))
+            item->Flags &= ~PH_EMENU_DISABLED;
+
         // These menu items are capable of manipulating
         // multiple processes.
         for (i = 0; i < sizeof(menuItemsMultiEnabled) / sizeof(ULONG); i++)
@@ -4065,7 +4361,6 @@ VOID PhMwpInitializeProcessMenu(
     }
 
     // Remove irrelevant menu items.
-
     if (WindowsVersion < WINDOWS_VISTA)
     {
         // Remove I/O priority.
@@ -4074,6 +4369,22 @@ VOID PhMwpInitializeProcessMenu(
         // Remove page priority.
         if (item = PhFindEMenuItem(Menu, PH_EMENU_FIND_DESCEND, L"Page Priority", 0))
             PhDestroyEMenuItem(item);
+    }
+
+    // Suspend/Resume
+    if (NumberOfProcesses == 1)
+    {
+        if (Processes[0]->IsSuspended)
+        {
+            if (item = PhFindEMenuItem(Menu, 0, NULL, ID_PROCESS_SUSPEND))
+                PhDestroyEMenuItem(item);
+        }
+
+        if (!Processes[0]->IsPartiallySuspended)
+        {
+            if (item = PhFindEMenuItem(Menu, 0, NULL, ID_PROCESS_RESUME))
+                PhDestroyEMenuItem(item);
+        }
     }
 
     // Virtualization
@@ -4115,7 +4426,7 @@ VOID PhMwpInitializeProcessMenu(
     // Priority
     if (NumberOfProcesses == 1)
     {
-        PhMwpSetProcessMenuPriorityChecks(Menu, Processes[0], TRUE, TRUE, TRUE);
+        PhMwpSetProcessMenuPriorityChecks(Menu, Processes[0]->ProcessId, TRUE, TRUE, TRUE);
     }
 
     item = PhFindEMenuItem(Menu, 0, L"Window", 0);
@@ -4128,8 +4439,7 @@ VOID PhMwpInitializeProcessMenu(
             WINDOWPLACEMENT placement = { sizeof(placement) };
 
             // Get a handle to the process' top-level window (if any).
-            SelectedProcessWindowHandle = NULL;
-            PhEnumChildWindows(NULL, 0x800, EnumProcessWindowsProc, (ULONG)Processes[0]->ProcessId);
+            SelectedProcessWindowHandle = PhGetProcessMainWindow(Processes[0]->ProcessId, Processes[0]->QueryHandle);
 
             if (!SelectedProcessWindowHandle)
                 item->Flags |= PH_EMENU_DISABLED;
@@ -4150,7 +4460,6 @@ VOID PhMwpInitializeProcessMenu(
     }
 
     // Remove irrelevant menu items (continued)
-
     if (!WINDOWS_HAS_UAC)
     {
         if (item = PhFindEMenuItem(Menu, 0, NULL, ID_PROCESS_VIRTUALIZATION))
@@ -4162,6 +4471,7 @@ VOID PhShowProcessContextMenu(
     _In_ PPH_TREENEW_CONTEXT_MENU ContextMenu
     )
 {
+    PH_PLUGIN_MENU_INFORMATION menuInfo;
     PPH_PROCESS_ITEM *processes;
     ULONG numberOfProcesses;
 
@@ -4181,10 +4491,7 @@ VOID PhShowProcessContextMenu(
 
         if (PhPluginsEnabled)
         {
-            PH_PLUGIN_MENU_INFORMATION menuInfo;
-
-            menuInfo.Menu = menu;
-            menuInfo.OwnerWindow = PhMainWndHandle;
+            PhPluginInitializeMenuInfo(&menuInfo, menu, PhMainWndHandle, 0);
             menuInfo.u.Process.Processes = processes;
             menuInfo.u.Process.NumberOfProcesses = numberOfProcesses;
 
@@ -4207,7 +4514,7 @@ VOID PhShowProcessContextMenu(
             handled = PhHandleCopyCellEMenuItem(item);
 
             if (!handled && PhPluginsEnabled)
-                handled = PhPluginTriggerEMenuItem(PhMainWndHandle, item);
+                handled = PhPluginTriggerEMenuItem(&menuInfo, item);
 
             if (!handled)
                 SendMessage(PhMainWndHandle, WM_COMMAND, item->Id, 0);
@@ -4253,6 +4560,7 @@ VOID PhMwpOnProcessAdded(
         PhLogProcessEntry(
             PH_LOG_ENTRY_PROCESS_CREATE,
             ProcessItem->ProcessId,
+            NULL,
             ProcessItem->ProcessName,
             parentProcessId,
             parentName
@@ -4262,12 +4570,16 @@ VOID PhMwpOnProcessAdded(
         {
             if (!PhPluginsEnabled || !PhMwpPluginNotifyEvent(PH_NOTIFY_PROCESS_CREATE, ProcessItem))
             {
+                PhMwpClearLastNotificationDetails();
+                LastNotificationType = PH_NOTIFY_PROCESS_CREATE;
+                LastNotificationDetails.ProcessId = ProcessItem->ProcessId;
+
                 PhShowIconNotification(L"Process Created", PhaFormatString(
                     L"The process %s (%u) was created by %s (%u)",
                     ProcessItem->ProcessName->Buffer,
-                    (ULONG)ProcessItem->ProcessId,
+                    HandleToUlong(ProcessItem->ProcessId),
                     PhGetStringOrDefault(parentName, L"Unknown Process"),
-                    (ULONG)ProcessItem->ParentProcessId
+                    HandleToUlong(ProcessItem->ParentProcessId)
                     )->Buffer, NIIF_INFO);
             }
         }
@@ -4313,16 +4625,20 @@ VOID PhMwpOnProcessRemoved(
         ProcessesNeedsRedraw = TRUE;
     }
 
-    PhLogProcessEntry(PH_LOG_ENTRY_PROCESS_DELETE, ProcessItem->ProcessId, ProcessItem->ProcessName, NULL, NULL);
+    PhLogProcessEntry(PH_LOG_ENTRY_PROCESS_DELETE, ProcessItem->ProcessId, ProcessItem->QueryHandle, ProcessItem->ProcessName, NULL, NULL);
 
     if (NotifyIconNotifyMask & PH_NOTIFY_PROCESS_DELETE)
     {
         if (!PhPluginsEnabled || !PhMwpPluginNotifyEvent(PH_NOTIFY_PROCESS_DELETE, ProcessItem))
         {
+            PhMwpClearLastNotificationDetails();
+            LastNotificationType = PH_NOTIFY_PROCESS_DELETE;
+            LastNotificationDetails.ProcessId = ProcessItem->ProcessId;
+
             PhShowIconNotification(L"Process Terminated", PhaFormatString(
                 L"The process %s (%u) was terminated.",
                 ProcessItem->ProcessName->Buffer,
-                (ULONG)ProcessItem->ProcessId
+                HandleToUlong(ProcessItem->ProcessId)
                 )->Buffer, NIIF_INFO);
         }
     }
@@ -4391,7 +4707,7 @@ VOID PhMwpNeedServiceTreeList(
             PPH_SERVICE_ITEM serviceItem;
             ULONG enumerationKey = 0;
 
-            while (PhEnumPointerList(ServicesPendingList, &enumerationKey, (PPVOID)&serviceItem))
+            while (PhEnumPointerList(ServicesPendingList, &enumerationKey, (PVOID *)&serviceItem))
             {
                 PhMwpOnServiceAdded(serviceItem, 1);
             }
@@ -4399,7 +4715,7 @@ VOID PhMwpNeedServiceTreeList(
             // Force a re-draw.
             PhMwpOnServicesUpdated();
 
-            PhSwapReference(&ServicesPendingList, NULL);
+            PhClearReference(&ServicesPendingList);
         }
     }
 }
@@ -4498,6 +4814,7 @@ VOID PhShowServiceContextMenu(
     _In_ PPH_TREENEW_CONTEXT_MENU ContextMenu
     )
 {
+    PH_PLUGIN_MENU_INFORMATION menuInfo;
     PPH_SERVICE_ITEM *services;
     ULONG numberOfServices;
 
@@ -4517,10 +4834,7 @@ VOID PhShowServiceContextMenu(
 
         if (PhPluginsEnabled)
         {
-            PH_PLUGIN_MENU_INFORMATION menuInfo;
-
-            menuInfo.Menu = menu;
-            menuInfo.OwnerWindow = PhMainWndHandle;
+            PhPluginInitializeMenuInfo(&menuInfo, menu, PhMainWndHandle, 0);
             menuInfo.u.Service.Services = services;
             menuInfo.u.Service.NumberOfServices = numberOfServices;
 
@@ -4543,7 +4857,7 @@ VOID PhShowServiceContextMenu(
             handled = PhHandleCopyCellEMenuItem(item);
 
             if (!handled && PhPluginsEnabled)
-                handled = PhPluginTriggerEMenuItem(PhMainWndHandle, item);
+                handled = PhPluginTriggerEMenuItem(&menuInfo, item);
 
             if (!handled)
                 SendMessage(PhMainWndHandle, WM_COMMAND, item->Id, 0);
@@ -4589,6 +4903,10 @@ VOID PhMwpOnServiceAdded(
         {
             if (!PhPluginsEnabled || !PhMwpPluginNotifyEvent(PH_NOTIFY_SERVICE_CREATE, ServiceItem))
             {
+                PhMwpClearLastNotificationDetails();
+                LastNotificationType = PH_NOTIFY_SERVICE_CREATE;
+                PhSwapReference(&LastNotificationDetails.ServiceName, ServiceItem->Name);
+
                 PhShowIconNotification(L"Service Created", PhaFormatString(
                     L"The service %s (%s) has been created.",
                     ServiceItem->Name->Buffer,
@@ -4657,6 +4975,10 @@ VOID PhMwpOnServiceModified(
         {
             if (!PhPluginsEnabled || !PhMwpPluginNotifyEvent(PH_NOTIFY_SERVICE_START, serviceItem))
             {
+                PhMwpClearLastNotificationDetails();
+                LastNotificationType = PH_NOTIFY_SERVICE_START;
+                PhSwapReference(&LastNotificationDetails.ServiceName, serviceItem->Name);
+
                 PhShowIconNotification(L"Service Started", PhaFormatString(
                     L"The service %s (%s) has been started.",
                     serviceItem->Name->Buffer,
@@ -4666,6 +4988,10 @@ VOID PhMwpOnServiceModified(
         }
         else if (serviceChange == ServiceStopped && (NotifyIconNotifyMask & PH_NOTIFY_SERVICE_STOP))
         {
+            PhMwpClearLastNotificationDetails();
+            LastNotificationType = PH_NOTIFY_SERVICE_STOP;
+            PhSwapReference(&LastNotificationDetails.ServiceName, serviceItem->Name);
+
             if (!PhPluginsEnabled || !PhMwpPluginNotifyEvent(PH_NOTIFY_SERVICE_STOP, serviceItem))
             {
                 PhShowIconNotification(L"Service Stopped", PhaFormatString(
@@ -4697,6 +5023,10 @@ VOID PhMwpOnServiceRemoved(
     {
         if (!PhPluginsEnabled || !PhMwpPluginNotifyEvent(PH_NOTIFY_SERVICE_DELETE, ServiceItem))
         {
+            PhMwpClearLastNotificationDetails();
+            LastNotificationType = PH_NOTIFY_SERVICE_DELETE;
+            PhSwapReference(&LastNotificationDetails.ServiceName, ServiceItem->Name);
+
             PhShowIconNotification(L"Service Deleted", PhaFormatString(
                 L"The service %s (%s) has been deleted.",
                 ServiceItem->Name->Buffer,
@@ -4817,6 +5147,13 @@ VOID PhMwpInitializeNetworkMenu(
             PhDestroyEMenuItem(item);
     }
 
+    // Go to Service
+    if (NumberOfNetworkItems != 1 || !NetworkItems[0]->OwnerName)
+    {
+        if (item = PhFindEMenuItem(Menu, 0, NULL, ID_NETWORK_GOTOSERVICE))
+            PhDestroyEMenuItem(item);
+    }
+
     // Close
     if (NumberOfNetworkItems != 0)
     {
@@ -4843,6 +5180,7 @@ VOID PhShowNetworkContextMenu(
     _In_ PPH_TREENEW_CONTEXT_MENU ContextMenu
     )
 {
+    PH_PLUGIN_MENU_INFORMATION menuInfo;
     PPH_NETWORK_ITEM *networkItems;
     ULONG numberOfNetworkItems;
 
@@ -4862,10 +5200,7 @@ VOID PhShowNetworkContextMenu(
 
         if (PhPluginsEnabled)
         {
-            PH_PLUGIN_MENU_INFORMATION menuInfo;
-
-            menuInfo.Menu = menu;
-            menuInfo.OwnerWindow = PhMainWndHandle;
+            PhPluginInitializeMenuInfo(&menuInfo, menu, PhMainWndHandle, 0);
             menuInfo.u.Network.NetworkItems = networkItems;
             menuInfo.u.Network.NumberOfNetworkItems = numberOfNetworkItems;
 
@@ -4888,7 +5223,7 @@ VOID PhShowNetworkContextMenu(
             handled = PhHandleCopyCellEMenuItem(item);
 
             if (!handled && PhPluginsEnabled)
-                handled = PhPluginTriggerEMenuItem(PhMainWndHandle, item);
+                handled = PhPluginTriggerEMenuItem(&menuInfo, item);
 
             if (!handled)
                 SendMessage(PhMainWndHandle, WM_COMMAND, item->Id, 0);

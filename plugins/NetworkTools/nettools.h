@@ -31,8 +31,6 @@
 #define COBJMACROS
 #include <windowsx.h>
 #include <phdk.h>
-#include <phapppub.h>
-#include <phplug.h>
 #include <phappresource.h>
 #include <windowsx.h>
 #include <winsock2.h>
@@ -42,19 +40,19 @@
 
 #include "resource.h"
 
-#define SETTING_PREFIX L"ProcessHacker.NetworkTools"
-#define SETTING_NAME_TRACERT_WINDOW_POSITION (SETTING_PREFIX L".WindowPosition")
-#define SETTING_NAME_TRACERT_WINDOW_SIZE (SETTING_PREFIX L".WindowSize")
-#define SETTING_NAME_PING_WINDOW_POSITION (SETTING_PREFIX L".PingWindowPosition")
-#define SETTING_NAME_PING_WINDOW_SIZE (SETTING_PREFIX L".PingWindowSize")
-#define SETTING_NAME_PING_TIMEOUT (SETTING_PREFIX L".PingMaxTimeout")
+#define PLUGIN_NAME L"ProcessHacker.NetworkTools"
+#define SETTING_NAME_TRACERT_WINDOW_POSITION (PLUGIN_NAME L".WindowPosition")
+#define SETTING_NAME_TRACERT_WINDOW_SIZE (PLUGIN_NAME L".WindowSize")
+#define SETTING_NAME_PING_WINDOW_POSITION (PLUGIN_NAME L".PingWindowPosition")
+#define SETTING_NAME_PING_WINDOW_SIZE (PLUGIN_NAME L".PingWindowSize")
+#define SETTING_NAME_PING_TIMEOUT (PLUGIN_NAME L".PingMaxTimeout")
 
 // ICMP Packet Length: (msdn: IcmpSendEcho2/Icmp6SendEcho2)
-// The buffer must be large enough to hold at least one ICMP_ECHO_REPLY or ICMPV6_ECHO_REPLY structure 
+// The buffer must be large enough to hold at least one ICMP_ECHO_REPLY or ICMPV6_ECHO_REPLY structure
 //       + the number of bytes of data specified in the RequestSize parameter.
-// This buffer should also be large enough to also hold 8 more bytes of data (the size of an ICMP error message) 
+// This buffer should also be large enough to also hold 8 more bytes of data (the size of an ICMP error message)
 //       + space for an IO_STATUS_BLOCK structure.
-#define ICMP_BUFFER_SIZE(Length, Buffer) ((Length + icmpEchoBuffer->MaximumLength) + 8 + sizeof(IO_STATUS_BLOCK))
+#define ICMP_BUFFER_SIZE(EchoReplyLength, Buffer) (ULONG)(((EchoReplyLength) + (Buffer)->Length) + 8 + sizeof(IO_STATUS_BLOCK))
 
 extern PPH_PLUGIN PluginInstance;
 
@@ -63,7 +61,8 @@ typedef enum _PH_NETWORK_ACTION
     NETWORK_ACTION_PING,
     NETWORK_ACTION_TRACEROUTE,
     NETWORK_ACTION_WHOIS,
-    NETWORK_ACTION_FINISH
+    NETWORK_ACTION_FINISH,
+    NETWORK_ACTION_PATHPING
 } PH_NETWORK_ACTION;
 
 // output
@@ -85,7 +84,6 @@ typedef struct _NETWORK_OUTPUT_CONTEXT
     HWND StatusHandle;
     HWND PingGraphHandle;
     HWND OutputHandle;
-    HANDLE ThreadHandle;
     HANDLE PipeReadHandle;
     HANDLE ProcessHandle;
     HFONT FontHandle;
@@ -100,10 +98,10 @@ typedef struct _NETWORK_OUTPUT_CONTEXT
     ULONG PingSentCount;
     ULONG PingRecvCount;
     ULONG PingLossCount;
-    
+
     PPH_NETWORK_ITEM NetworkItem;
     PH_IP_ADDRESS IpAddress;
-    WCHAR addressString[65];
+    WCHAR IpAddressString[INET6_ADDRSTRLEN];
 } NETWORK_OUTPUT_CONTEXT, *PNETWORK_OUTPUT_CONTEXT;
 
 NTSTATUS PhNetworkPingDialogThreadStart(

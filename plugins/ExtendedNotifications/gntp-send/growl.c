@@ -1,3 +1,4 @@
+#define _CRT_RAND_S
 #include <phdk.h>
 #include <winsock2.h>
 #include <stdio.h>
@@ -25,43 +26,53 @@ static char* string_to_hex_alloc(const char* str, int len) {
 
 int growl_init_ = 0;
 
+/* dmex: modified to use latest Winsock version */
 int growl_init()
 {
-        if( growl_init_ == 0)
+    if (growl_init_ == 0)
+    {
+#ifdef _WIN32
+        WSADATA wsaData;
+        if (WSAStartup(WINSOCK_VERSION, &wsaData) != 0)
         {
-                #ifdef _WIN32
-                WSADATA wsaData;
-                if( WSAStartup( MAKEWORD( 2 , 0 ) , &wsaData) != 0 )
-                {
-                        return -1;
-                }
-                #endif
-
-                srand((unsigned int)time(NULL));
-                growl_init_ = 1;
+            return -1;
         }
-        return 1;
+#endif
+
+        growl_init_ = 1;
+    }
+    return 1;
 }
 
 
 void growl_shutdown()
 {
-        if( growl_init_ == 1 )
-        {
-                #ifdef _WIN32
-                WSACleanup();
-                #endif
-        }
+    if (growl_init_ == 1)
+    {
+#ifdef _WIN32
+        WSACleanup();
+#endif
+    }
 }
 
-
-char* gen_salt_alloc(int count) {
+/* dmex: modified to use a version of rand with security enhancements */
+char* gen_salt_alloc(int count)
+{
     char* salt = (char*)PhAllocateSafe(count + 1);
-    if (salt) {
+
+    if (salt)
+    {
         int n;
-        for (n = 0; n < count; n++) salt[n] = (((int)rand()) % 255) + 1;
+        int randSeed = 0;
+
+        rand_s(&randSeed);
+
+        for (n = 0; n < count; n++)
+            salt[n] = (randSeed % 255) + 1;
+
         salt[n] = 0;
     }
+
     return salt;
 }
 
@@ -109,26 +120,26 @@ char *growl_generate_authheader_alloc(const char*const password)
             PhFree(salt);
         }
     }
-    
+
     return authheader;
 }
 
-
+/* dmex: modified to use INVALID_SOCKET */
 int growl_tcp_register( const char *const server , const char *const appname , const char **const notifications , const int notifications_count ,
         const char *const password, const char* const icon  )
 {
-    SOCKET sock = -1;
+    SOCKET sock = INVALID_SOCKET;
     int i=0;
     char *authheader;
     char *iconid = NULL;
     FILE *iconfile = NULL;
     size_t iconsize;
     uint8_t buffer[1024];
-    
+
     growl_init();
     authheader = growl_generate_authheader_alloc(password);
     sock = growl_tcp_open(server);
-    if (sock == -1) goto leave;
+    if (sock == INVALID_SOCKET) goto leave;
     if (icon) {
         size_t bytes_read;
         md5_context md5ctx;
@@ -152,13 +163,13 @@ int growl_tcp_register( const char *const server , const char *const appname , c
 
     growl_tcp_write(sock, "GNTP/1.0 REGISTER NONE %s", authheader ? authheader : "");
     growl_tcp_write(sock, "Application-Name: %s", appname);
-    if(iconid) 
+    if(iconid)
     {
-        growl_tcp_write(sock, "Application-Icon: x-growl-resource://%s", iconid);	
+        growl_tcp_write(sock, "Application-Icon: x-growl-resource://%s", iconid);
     }
     else if(icon)
     {
-        growl_tcp_write(sock, "Application-Icon: %s", icon );	
+        growl_tcp_write(sock, "Application-Icon: %s", icon );
     }
     growl_tcp_write(sock, "Notifications-Count: %d", notifications_count);
     growl_tcp_write(sock, "" );
@@ -168,30 +179,30 @@ int growl_tcp_register( const char *const server , const char *const appname , c
         growl_tcp_write(sock, "Notification-Name: %s", notifications[i]);
         growl_tcp_write(sock, "Notification-Display-Name: %s", notifications[i]);
         growl_tcp_write(sock, "Notification-Enabled: True" );
-        if(iconid) 
+        if(iconid)
         {
-            growl_tcp_write(sock, "Notification-Icon: x-growl-resource://%s", iconid);	
+            growl_tcp_write(sock, "Notification-Icon: x-growl-resource://%s", iconid);
         }
         else if(icon)
         {
-            growl_tcp_write(sock, "Notification-Icon: %s", icon );	
+            growl_tcp_write(sock, "Notification-Icon: %s", icon );
         }
         growl_tcp_write(sock, "" );
     }
-   
-    if (iconid) 
+
+    if (iconid)
     {
         growl_tcp_write(sock, "Identifier: %s", iconid);
         growl_tcp_write(sock, "Length: %d", iconsize);
         growl_tcp_write(sock, "" );
 
-        while (!feof(iconfile)) 
+        while (!feof(iconfile))
         {
             size_t bytes_read = fread(buffer, 1, 1024, iconfile);
             if (bytes_read) growl_tcp_write_raw(sock, buffer, (int)bytes_read);
         }
         growl_tcp_write(sock, "" );
-        
+
     }
     growl_tcp_write(sock, "" );
 
@@ -200,14 +211,14 @@ int growl_tcp_register( const char *const server , const char *const appname , c
         char* line = growl_tcp_read(sock);
         if (!line) {
             growl_tcp_close(sock);
-            sock = -1;
+            sock = INVALID_SOCKET;
             goto leave;
-        } 
-        else 
+        }
+        else
         {
             int len = (int)strlen(line);
             /* fprintf(stderr, "%s\n", line); */
-            if (strncmp(line, "GNTP/1.0 -ERROR", 15) == 0) 
+            if (strncmp(line, "GNTP/1.0 -ERROR", 15) == 0)
             {
                 if (strncmp(line + 15, " NONE", 5) != 0)
                 {
@@ -228,27 +239,27 @@ int growl_tcp_register( const char *const server , const char *const appname , c
     if (iconid) PhFree(iconid);
     if (authheader) PhFree(authheader);
 
-    return (sock == 0) ? 0 : -1;
+    return (sock == 0) ? 0 : INVALID_SOCKET;
 }
 
-
+/* dmex: modified to use INVALID_SOCKET */
 int growl_tcp_notify( const char *const server,const char *const appname,const char *const notify,const char *const title, const char *const message ,
                                 const char *const password, const char* const url, const char* const icon)
 {
-    SOCKET sock = -1;
+    SOCKET sock = INVALID_SOCKET;
 
     char *authheader = growl_generate_authheader_alloc(password);
     char *iconid = NULL;
     FILE *iconfile = NULL;
     size_t iconsize;
     uint8_t buffer[1024];
-    
+
     growl_init();
 
     sock = growl_tcp_open(server);
-    if (sock == -1) goto leave;
+    if (sock == INVALID_SOCKET) goto leave;
 
-    if (icon) 
+    if (icon)
     {
         size_t bytes_read;
         md5_context md5ctx;
@@ -277,22 +288,22 @@ int growl_tcp_notify( const char *const server,const char *const appname,const c
     growl_tcp_write(sock, "Notification-Name: %s", notify);
     growl_tcp_write(sock, "Notification-Title: %s", title);
     growl_tcp_write(sock, "Notification-Text: %s", message);
-    if(iconid) 
+    if(iconid)
     {
-        growl_tcp_write(sock, "Notification-Icon: x-growl-resource://%s", iconid);	
+        growl_tcp_write(sock, "Notification-Icon: x-growl-resource://%s", iconid);
     }
     else if(icon)
     {
-        growl_tcp_write(sock, "Notification-Icon: %s", icon );	
+        growl_tcp_write(sock, "Notification-Icon: %s", icon );
     }
     if (url) growl_tcp_write(sock, "Notification-Callback-Target: %s", url  );
-    
+
     if (iconid)
     {
         growl_tcp_write(sock, "Identifier: %s", iconid);
         growl_tcp_write(sock, "Length: %d", iconsize);
         growl_tcp_write(sock, "");
-        while (!feof(iconfile)) 
+        while (!feof(iconfile))
         {
             size_t bytes_read = fread(buffer, 1, 1024, iconfile);
             if (bytes_read) growl_tcp_write_raw(sock, buffer, (int)bytes_read);
@@ -300,21 +311,21 @@ int growl_tcp_notify( const char *const server,const char *const appname,const c
         growl_tcp_write(sock, "" );
     }
     growl_tcp_write(sock, "");
-    
-    
-    while (1) 
+
+
+    while (1)
     {
         char* line = growl_tcp_read(sock);
-        if (!line) 
+        if (!line)
         {
             growl_tcp_close(sock);
-            sock = -1;
+            sock = INVALID_SOCKET;
             goto leave;
-        } else 
+        } else
         {
             int len = (int)strlen(line);
             /* fprintf(stderr, "%s\n", line); */
-            if (strncmp(line, "GNTP/1.0 -ERROR", 15) == 0) 
+            if (strncmp(line, "GNTP/1.0 -ERROR", 15) == 0)
             {
                 if (strncmp(line + 15, " NONE", 5) != 0)
                 {
@@ -335,14 +346,14 @@ leave:
     if (iconid) PhFree(iconid);
     if (authheader) PhFree(authheader);
 
-    return (sock == 0) ? 0 : -1;
+    return (sock == 0) ? 0 : INVALID_SOCKET;
 }
 
 
 
 int growl( const char *const server,const char *const appname,const char *const notify,const char *const title, const char *const message ,
                                 const char *const icon , const char *const password , const char *url )
-{		
+{
     int rc = growl_tcp_register(  server ,  appname ,  (const char **const)&notify , 1 , password, icon  );
     if( rc == 0 )
     {
@@ -391,22 +402,22 @@ int growl_udp_register( const char *const server , const char *const appname , c
     for(i=0;i<notifications_count;i++)
     {
         register_header_length += 3 + (int)strlen(notifications[i]);
-    }	
+    }
     data = (unsigned char*)PhAllocateSafe(register_header_length);
     if (!data) return -1;
     memset( data , 0 ,  register_header_length );
 
 
     pointer = 0;
-    memcpy( data + pointer , &GROWL_PROTOCOL_VERSION , 1 );	
+    memcpy( data + pointer , &GROWL_PROTOCOL_VERSION , 1 );
     pointer++;
     memcpy( data + pointer , &GROWL_TYPE_REGISTRATION , 1 );
     pointer++;
-    memcpy( data + pointer , &appname_length , 2 );	
+    memcpy( data + pointer , &appname_length , 2 );
     pointer += 2;
-    memcpy( data + pointer , &_notifications_count , 1 );	
+    memcpy( data + pointer , &_notifications_count , 1 );
     pointer++;
-    memcpy( data + pointer, &default_notifications_count , 1 );	
+    memcpy( data + pointer, &default_notifications_count , 1 );
     pointer++;
     sprintf( (char*)data + pointer , "%s" , appname );
     pointer += (int)strlen(appname);
@@ -414,11 +425,11 @@ int growl_udp_register( const char *const server , const char *const appname , c
     for(i=0;i<notifications_count;i++)
     {
         uint16_t notify_length = ntohs((u_short)strlen(notifications[i]));
-        memcpy( data + pointer, &notify_length , 2 );		
+        memcpy( data + pointer, &notify_length , 2 );
         pointer +=2;
         sprintf( (char*)data + pointer , "%s" , notifications[i] );
         pointer += (int)strlen(notifications[i]);
-    } 
+    }
 
     for(j=0;j<notifications_count;j++)
     {
@@ -456,21 +467,21 @@ int growl_udp_notify( const char *const server,const char *const appname,const c
 
     growl_init();
     memset( data , 0 ,  notify_header_length );
-    
+
     pointer = 0;
-    memcpy( data + pointer , &GROWL_PROTOCOL_VERSION , 1 );	
+    memcpy( data + pointer , &GROWL_PROTOCOL_VERSION , 1 );
     pointer++;
     memcpy( data + pointer , &GROWL_TYPE_NOTIFICATION , 1 );
     pointer++;
     memcpy( data + pointer , &flags , 2 );
     pointer += 2;
-    memcpy( data + pointer , &notify_length , 2 );	
+    memcpy( data + pointer , &notify_length , 2 );
     pointer += 2;
-    memcpy( data + pointer , &title_length , 2 );	
+    memcpy( data + pointer , &title_length , 2 );
     pointer += 2;
-    memcpy( data + pointer , &message_length , 2 );	
+    memcpy( data + pointer , &message_length , 2 );
     pointer += 2;
-    memcpy( data + pointer , &appname_length , 2 );	
+    memcpy( data + pointer , &appname_length , 2 );
     pointer += 2;
     strcpy( (char*)data + pointer , notify );
     pointer += (int)strlen(notify);

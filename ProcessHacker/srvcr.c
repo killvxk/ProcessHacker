@@ -72,7 +72,7 @@ INT_PTR CALLBACK PhpCreateServiceDlgProc(
                 SendMessage(GetDlgItem(hwndDlg, IDOK), BCM_SETSHIELD, 0, TRUE);
             }
 
-            SetFocus(GetDlgItem(hwndDlg, IDC_NAME));
+            SendMessage(hwndDlg, WM_NEXTDLGCTL, (WPARAM)GetDlgItem(hwndDlg, IDC_NAME), TRUE);
         }
         break;
     case WM_COMMAND:
@@ -101,17 +101,17 @@ INT_PTR CALLBACK PhpCreateServiceDlgProc(
                     ULONG serviceErrorControl;
                     PPH_STRING serviceBinaryPath;
 
-                    serviceName = PHA_DEREFERENCE(PhGetWindowText(GetDlgItem(hwndDlg, IDC_NAME)));
-                    serviceDisplayName = PHA_DEREFERENCE(PhGetWindowText(GetDlgItem(hwndDlg, IDC_DISPLAYNAME)));
+                    serviceName = PhAutoDereferenceObject(PhGetWindowText(GetDlgItem(hwndDlg, IDC_NAME)));
+                    serviceDisplayName = PhAutoDereferenceObject(PhGetWindowText(GetDlgItem(hwndDlg, IDC_DISPLAYNAME)));
 
-                    serviceTypeString = PHA_DEREFERENCE(PhGetWindowText(GetDlgItem(hwndDlg, IDC_TYPE)));
-                    serviceStartTypeString = PHA_DEREFERENCE(PhGetWindowText(GetDlgItem(hwndDlg, IDC_STARTTYPE)));
-                    serviceErrorControlString = PHA_DEREFERENCE(PhGetWindowText(GetDlgItem(hwndDlg, IDC_ERRORCONTROL)));
+                    serviceTypeString = PhAutoDereferenceObject(PhGetWindowText(GetDlgItem(hwndDlg, IDC_TYPE)));
+                    serviceStartTypeString = PhAutoDereferenceObject(PhGetWindowText(GetDlgItem(hwndDlg, IDC_STARTTYPE)));
+                    serviceErrorControlString = PhAutoDereferenceObject(PhGetWindowText(GetDlgItem(hwndDlg, IDC_ERRORCONTROL)));
                     serviceType = PhGetServiceTypeInteger(serviceTypeString->Buffer);
                     serviceStartType = PhGetServiceStartTypeInteger(serviceStartTypeString->Buffer);
                     serviceErrorControl = PhGetServiceErrorControlInteger(serviceErrorControlString->Buffer);
 
-                    serviceBinaryPath = PHA_DEREFERENCE(PhGetWindowText(GetDlgItem(hwndDlg, IDC_BINARYPATH)));
+                    serviceBinaryPath = PhAutoDereferenceObject(PhGetWindowText(GetDlgItem(hwndDlg, IDC_BINARYPATH)));
 
                     if (PhElevated)
                     {
@@ -198,7 +198,7 @@ INT_PTR CALLBACK PhpCreateServiceDlgProc(
                     fileDialog = PhCreateOpenFileDialog();
                     PhSetFileDialogFilter(fileDialog, filters, sizeof(filters) / sizeof(PH_FILETYPE_FILTER));
 
-                    fileName = PhGetFileName(PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_BINARYPATH));
+                    fileName = PhGetFileName(PhaGetDlgItemText(hwndDlg, IDC_BINARYPATH));
                     PhSetFileDialogFileName(fileDialog, fileName->Buffer);
                     PhDereferenceObject(fileName);
 

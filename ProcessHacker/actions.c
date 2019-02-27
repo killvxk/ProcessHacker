@@ -2,7 +2,7 @@
  * Process Hacker -
  *   UI actions
  *
- * Copyright (C) 2010-2011 wj32
+ * Copyright (C) 2010-2016 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -47,6 +47,7 @@ static PWSTR DangerousProcesses[] =
 static PPH_STRING DebuggerCommand = NULL;
 static PH_INITONCE DebuggerCommandInitOnce = PH_INITONCE_INIT;
 static ULONG PhSvcReferenceCount = 0;
+static PH_PHSVC_MODE PhSvcCurrentMode;
 static PH_QUEUED_LOCK PhSvcStartLock = PH_QUEUED_LOCK_INIT;
 
 HRESULT CALLBACK PhpElevateActionCallbackProc(
@@ -90,7 +91,7 @@ BOOLEAN PhpShowElevatePrompt(
     /*config.pszContent = PhaConcatStrings(
         3,
         L"Unable to perform the action: ",
-        ((PPH_STRING)PHA_DEREFERENCE(PhGetNtMessage(Status)))->Buffer,
+        ((PPH_STRING)PhAutoDereferenceObject(PhGetNtMessage(Status)))->Buffer,
         L"\nYou will need to provide administrator permission. "
         L"Click Continue to complete this operation."
         )->Buffer;*/
@@ -286,7 +287,117 @@ BOOLEAN PhpShowErrorAndConnectToPhSvc(
  * attempt failed.
  */
 BOOLEAN PhUiConnectToPhSvc(
-    _In_ HWND hWnd,
+    _In_opt_ HWND hWnd,
+    _In_ BOOLEAN ConnectOnly
+    )
+{
+    return PhUiConnectToPhSvcEx(hWnd, ElevatedPhSvcMode, ConnectOnly);
+}
+
+VOID PhpGetPhSvcPortName(
+    _In_ PH_PHSVC_MODE Mode,
+    _Out_ PUNICODE_STRING PortName
+    )
+{
+    switch (Mode)
+    {
+    case ElevatedPhSvcMode:
+        if (!PhIsExecutingInWow64())
+            RtlInitUnicodeString(PortName, PHSVC_PORT_NAME);
+        else
+            RtlInitUnicodeString(PortName, PHSVC_WOW64_PORT_NAME);
+        break;
+    case Wow64PhSvcMode:
+        RtlInitUnicodeString(PortName, PHSVC_WOW64_PORT_NAME);
+        break;
+    default:
+        PhRaiseStatus(STATUS_INVALID_PARAMETER);
+        break;
+    }
+}
+
+BOOLEAN PhpStartPhSvcProcess(
+    _In_opt_ HWND hWnd,
+    _In_ PH_PHSVC_MODE Mode
+    )
+{
+    switch (Mode)
+    {
+    case ElevatedPhSvcMode:
+        if (PhShellProcessHacker(
+            hWnd,
+            L"-phsvc",
+            SW_HIDE,
+            PH_SHELL_EXECUTE_ADMIN,
+            PH_SHELL_APP_PROPAGATE_PARAMETERS,
+            0,
+            NULL
+            ))
+        {
+            return TRUE;
+        }
+
+        break;
+    case Wow64PhSvcMode:
+        {
+            static PWSTR relativeFileNames[] =
+            {
+                L"\\x86\\ProcessHacker.exe",
+                L"\\..\\x86\\ProcessHacker.exe",
+#ifdef DEBUG
+                L"\\..\\Debug32\\ProcessHacker.exe",
+#endif
+                L"\\..\\Release32\\ProcessHacker.exe"
+            };
+
+            ULONG i;
+
+            for (i = 0; i < sizeof(relativeFileNames) / sizeof(PWSTR); i++)
+            {
+                PPH_STRING fileName;
+
+                fileName = PhConcatStrings2(PhApplicationDirectory->Buffer, relativeFileNames[i]);
+                PhMoveReference(&fileName, PhGetFullPath(fileName->Buffer, NULL));
+
+                if (fileName && RtlDoesFileExists_U(fileName->Buffer))
+                {
+                    if (PhShellProcessHackerEx(
+                        hWnd,
+                        fileName->Buffer,
+                        L"-phsvc",
+                        SW_HIDE,
+                        0,
+                        PH_SHELL_APP_PROPAGATE_PARAMETERS,
+                        0,
+                        NULL
+                        ))
+                    {
+                        PhDereferenceObject(fileName);
+                        return TRUE;
+                    }
+                }
+
+                PhClearReference(&fileName);
+            }
+        }
+        break;
+    }
+
+    return FALSE;
+}
+
+/**
+ * Connects to phsvc.
+ *
+ * \param hWnd The window to display user interface components on.
+ * \param Mode The type of phsvc instance to connect to.
+ * \param ConnectOnly TRUE to only try to connect to phsvc, otherwise
+ * FALSE to try to elevate and start phsvc if the initial connection
+ * attempt failed.
+ */
+BOOLEAN PhUiConnectToPhSvcEx(
+    _In_opt_ HWND hWnd,
+    _In_ PH_PHSVC_MODE Mode,
     _In_ BOOLEAN ConnectOnly
     )
 {
@@ -296,7 +407,15 @@ BOOLEAN PhUiConnectToPhSvc(
 
     if (_InterlockedIncrementNoZero(&PhSvcReferenceCount))
     {
-        started = TRUE;
+        if (PhSvcCurrentMode == Mode)
+        {
+            started = TRUE;
+        }
+        else
+        {
+            _InterlockedDecrement(&PhSvcReferenceCount);
+            started = FALSE;
+        }
     }
     else
     {
@@ -305,7 +424,7 @@ BOOLEAN PhUiConnectToPhSvc(
         if (PhSvcReferenceCount == 0)
         {
             started = FALSE;
-            RtlInitUnicodeString(&portName, PHSVC_PORT_NAME);
+            PhpGetPhSvcPortName(Mode, &portName);
 
             // Try to connect first, then start the server if we failed.
             status = PhSvcConnectToServer(&portName, 0);
@@ -313,24 +432,15 @@ BOOLEAN PhUiConnectToPhSvc(
             if (NT_SUCCESS(status))
             {
                 started = TRUE;
+                PhSvcCurrentMode = Mode;
                 _InterlockedIncrement(&PhSvcReferenceCount);
             }
             else if (!ConnectOnly)
             {
                 // Prompt for elevation, and then try to connect to the server.
 
-                if (PhShellProcessHacker(
-                    hWnd,
-                    L"-phsvc",
-                    SW_HIDE,
-                    PH_SHELL_EXECUTE_ADMIN,
-                    PH_SHELL_APP_PROPAGATE_PARAMETERS,
-                    0,
-                    NULL
-                    ))
-                {
+                if (PhpStartPhSvcProcess(hWnd, Mode))
                     started = TRUE;
-                }
 
                 if (started)
                 {
@@ -353,14 +463,22 @@ BOOLEAN PhUiConnectToPhSvc(
                     // Increment the reference count even if we failed.
                     // We don't want to prompt the user again.
 
+                    PhSvcCurrentMode = Mode;
                     _InterlockedIncrement(&PhSvcReferenceCount);
                 }
             }
         }
         else
         {
-            started = TRUE;
-            _InterlockedIncrement(&PhSvcReferenceCount);
+            if (PhSvcCurrentMode == Mode)
+            {
+                started = TRUE;
+                _InterlockedIncrement(&PhSvcReferenceCount);
+            }
+            else
+            {
+                started = FALSE;
+            }
         }
 
         PhReleaseQueuedLockExclusive(&PhSvcStartLock);
@@ -405,7 +523,7 @@ BOOLEAN PhUiLogoffComputer(
     if (ExitWindowsEx(EWX_LOGOFF, 0))
         return TRUE;
     else
-        PhShowStatus(hWnd, L"Unable to logoff the computer", 0, GetLastError());
+        PhShowStatus(hWnd, L"Unable to log off the computer", 0, GetLastError());
 
     return FALSE;
 }
@@ -477,7 +595,7 @@ BOOLEAN PhUiShutdownComputer(
 {
     if (!PhGetIntegerSetting(L"EnableWarnings") || PhShowConfirmMessage(
         hWnd,
-        L"shutdown",
+        L"shut down",
         L"the computer",
         NULL,
         FALSE
@@ -493,7 +611,7 @@ BOOLEAN PhUiShutdownComputer(
         }
         else
         {
-            PhShowStatus(hWnd, L"Unable to shutdown the computer", 0, GetLastError());
+            PhShowStatus(hWnd, L"Unable to shut down the computer", 0, GetLastError());
         }
     }
 
@@ -628,10 +746,10 @@ static BOOLEAN PhpIsDangerousProcess(
     if (!NT_SUCCESS(status))
         return FALSE;
 
-    PhSwapReference2(&fileName, PhGetFileName(fileName));
-    PhaDereferenceObject(fileName);
+    PhMoveReference(&fileName, PhGetFileName(fileName));
+    PhAutoDereferenceObject(fileName);
 
-    systemDirectory = PHA_DEREFERENCE(PhGetSystemDirectory());
+    systemDirectory = PhAutoDereferenceObject(PhGetSystemDirectory());
 
     for (i = 0; i < sizeof(DangerousProcesses) / sizeof(PWSTR); i++)
     {
@@ -759,7 +877,7 @@ static BOOLEAN PhpShowContinueMessageProcesses(
         {
             PPH_STRING message;
 
-            if (WSTR_EQUAL(Verb, L"terminate"))
+            if (PhEqualStringZ(Verb, L"terminate", FALSE))
             {
                 message = PhaConcatStrings(
                     3,
@@ -829,7 +947,7 @@ static BOOLEAN PhpShowErrorProcess(
             L"Unable to %s %s (PID %u)",
             Verb,
             Process->ProcessName->Buffer,
-            (ULONG)Process->ProcessId
+            HandleToUlong(Process->ProcessId)
             )->Buffer,
             Status,
             Win32Result
@@ -1237,7 +1355,7 @@ BOOLEAN PhUiRestartProcess(
         )))
         goto ErrorExit;
 
-    PhaDereferenceObject(commandLine);
+    PhAutoDereferenceObject(commandLine);
 
     if (!NT_SUCCESS(status = PhGetProcessPebString(
         processHandle,
@@ -1246,7 +1364,7 @@ BOOLEAN PhUiRestartProcess(
         )))
         goto ErrorExit;
 
-    PhaDereferenceObject(currentDirectory);
+    PhAutoDereferenceObject(currentDirectory);
 
     NtClose(processHandle);
     processHandle = NULL;
@@ -1347,7 +1465,7 @@ BOOLEAN PhUiDebugProcess(
                 if (PhSplitStringRefAtChar(&debugger->sr, '"', &dummy, &commandPart) &&
                     PhSplitStringRefAtChar(&commandPart, '"', &commandPart, &dummy))
                 {
-                    DebuggerCommand = PhCreateStringEx(commandPart.Buffer, commandPart.Length);
+                    DebuggerCommand = PhCreateString2(&commandPart);
                 }
 
                 PhDereferenceObject(debugger);
@@ -1368,9 +1486,9 @@ BOOLEAN PhUiDebugProcess(
     PhInitializeStringBuilder(&commandLineBuilder, DebuggerCommand->Length + 30);
 
     PhAppendCharStringBuilder(&commandLineBuilder, '"');
-    PhAppendStringBuilder(&commandLineBuilder, DebuggerCommand);
+    PhAppendStringBuilder(&commandLineBuilder, &DebuggerCommand->sr);
     PhAppendCharStringBuilder(&commandLineBuilder, '"');
-    PhAppendFormatStringBuilder(&commandLineBuilder, L" -p %u", (ULONG)Process->ProcessId);
+    PhAppendFormatStringBuilder(&commandLineBuilder, L" -p %u", HandleToUlong(Process->ProcessId));
 
     status = PhCreateProcessWin32(
         NULL,
@@ -1581,7 +1699,7 @@ BOOLEAN PhUiInjectDllProcess(
         return FALSE;
     }
 
-    fileName = PHA_DEREFERENCE(PhGetFileDialogFileName(fileDialog));
+    fileName = PhAutoDereferenceObject(PhGetFileDialogFileName(fileDialog));
     PhFreeFileDialog(fileDialog);
 
     if (NT_SUCCESS(status = PhOpenProcess(
@@ -1612,54 +1730,66 @@ BOOLEAN PhUiInjectDllProcess(
     return TRUE;
 }
 
-BOOLEAN PhUiSetIoPriorityProcess(
+BOOLEAN PhUiSetIoPriorityProcesses(
     _In_ HWND hWnd,
-    _In_ PPH_PROCESS_ITEM Process,
+    _In_ PPH_PROCESS_ITEM *Processes,
+    _In_ ULONG NumberOfProcesses,
     _In_ ULONG IoPriority
     )
 {
-    NTSTATUS status;
     BOOLEAN success = TRUE;
-    HANDLE processHandle;
+    BOOLEAN cancelled = FALSE;
+    ULONG i;
 
-    if (NT_SUCCESS(status = PhOpenProcess(
-        &processHandle,
-        PROCESS_SET_INFORMATION,
-        Process->ProcessId
-        )))
+    for (i = 0; i < NumberOfProcesses; i++)
     {
-        status = PhSetProcessIoPriority(processHandle, IoPriority);
+        NTSTATUS status;
+        HANDLE processHandle;
 
-        NtClose(processHandle);
-    }
-
-    if (!NT_SUCCESS(status))
-    {
-        BOOLEAN connected;
-
-        success = FALSE;
-
-        // The operation may have failed due to the lack of SeIncreaseBasePriorityPrivilege.
-        if (PhpShowErrorAndConnectToPhSvc(
-            hWnd,
-            PhaConcatStrings2(L"Unable to set the I/O priority of ", Process->ProcessName->Buffer)->Buffer,
-            status,
-            &connected
-            ))
+        if (NT_SUCCESS(status = PhOpenProcess(
+            &processHandle,
+            PROCESS_SET_INFORMATION,
+            Processes[i]->ProcessId
+            )))
         {
-            if (connected)
-            {
-                if (NT_SUCCESS(status = PhSvcCallControlProcess(Process->ProcessId, PhSvcControlProcessIoPriority, IoPriority)))
-                    success = TRUE;
-                else
-                    PhpShowErrorProcess(hWnd, L"set the I/O priority of", Process, status, 0);
+            status = PhSetProcessIoPriority(processHandle, IoPriority);
 
-                PhUiDisconnectFromPhSvc();
-            }
+            NtClose(processHandle);
         }
-        else
+
+        if (!NT_SUCCESS(status))
         {
-            PhpShowErrorProcess(hWnd, L"set the I/O priority of", Process, status, 0);
+            BOOLEAN connected;
+
+            success = FALSE;
+
+            // The operation may have failed due to the lack of SeIncreaseBasePriorityPrivilege.
+            if (!cancelled && PhpShowErrorAndConnectToPhSvc(
+                hWnd,
+                PhaConcatStrings2(L"Unable to set the I/O priority of ", Processes[i]->ProcessName->Buffer)->Buffer,
+                status,
+                &connected
+                ))
+            {
+                if (connected)
+                {
+                    if (NT_SUCCESS(status = PhSvcCallControlProcess(Processes[i]->ProcessId, PhSvcControlProcessIoPriority, IoPriority)))
+                        success = TRUE;
+                    else
+                        PhpShowErrorProcess(hWnd, L"set the I/O priority of", Processes[i], status, 0);
+
+                    PhUiDisconnectFromPhSvc();
+                }
+                else
+                {
+                    cancelled = TRUE;
+                }
+            }
+            else
+            {
+                if (!PhpShowErrorProcess(hWnd, L"set the I/O priority of", Processes[i], status, 0))
+                    break;
+            }
         }
     }
 
@@ -1700,57 +1830,69 @@ BOOLEAN PhUiSetPagePriorityProcess(
     return TRUE;
 }
 
-BOOLEAN PhUiSetPriorityProcess(
+BOOLEAN PhUiSetPriorityProcesses(
     _In_ HWND hWnd,
-    _In_ PPH_PROCESS_ITEM Process,
+    _In_ PPH_PROCESS_ITEM *Processes,
+    _In_ ULONG NumberOfProcesses,
     _In_ ULONG PriorityClass
     )
 {
-    NTSTATUS status;
     BOOLEAN success = TRUE;
-    HANDLE processHandle;
-    PROCESS_PRIORITY_CLASS priorityClass;
+    BOOLEAN cancelled = FALSE;
+    ULONG i;
 
-    if (NT_SUCCESS(status = PhOpenProcess(
-        &processHandle,
-        PROCESS_SET_INFORMATION,
-        Process->ProcessId
-        )))
+    for (i = 0; i < NumberOfProcesses; i++)
     {
-        priorityClass.Foreground = FALSE;
-        priorityClass.PriorityClass = (UCHAR)PriorityClass;
-        status = NtSetInformationProcess(processHandle, ProcessPriorityClass, &priorityClass, sizeof(PROCESS_PRIORITY_CLASS));
+        NTSTATUS status;
+        HANDLE processHandle;
+        PROCESS_PRIORITY_CLASS priorityClass;
 
-        NtClose(processHandle);
-    }
-
-    if (!NT_SUCCESS(status))
-    {
-        BOOLEAN connected;
-
-        success = FALSE;
-
-        // The operation may have failed due to the lack of SeIncreaseBasePriorityPrivilege.
-        if (PhpShowErrorAndConnectToPhSvc(
-            hWnd,
-            PhaConcatStrings2(L"Unable to set the priority of ", Process->ProcessName->Buffer)->Buffer,
-            status,
-            &connected
-            ))
+        if (NT_SUCCESS(status = PhOpenProcess(
+            &processHandle,
+            PROCESS_SET_INFORMATION,
+            Processes[i]->ProcessId
+            )))
         {
-            if (connected)
-            {
-                if (NT_SUCCESS(status = PhSvcCallControlProcess(Process->ProcessId, PhSvcControlProcessPriority, PriorityClass)))
-                    success = TRUE;
-                else
-                    PhpShowErrorProcess(hWnd, L"set the priority of", Process, status, 0);
+            priorityClass.Foreground = FALSE;
+            priorityClass.PriorityClass = (UCHAR)PriorityClass;
+            status = NtSetInformationProcess(processHandle, ProcessPriorityClass, &priorityClass, sizeof(PROCESS_PRIORITY_CLASS));
 
-                PhUiDisconnectFromPhSvc();
-            }
+            NtClose(processHandle);
         }
-        else
+
+        if (!NT_SUCCESS(status))
         {
-            PhpShowErrorProcess(hWnd, L"set the priority of", Process, status, 0);
+            BOOLEAN connected;
+
+            success = FALSE;
+
+            // The operation may have failed due to the lack of SeIncreaseBasePriorityPrivilege.
+            if (!cancelled && PhpShowErrorAndConnectToPhSvc(
+                hWnd,
+                PhaConcatStrings2(L"Unable to set the priority of ", Processes[i]->ProcessName->Buffer)->Buffer,
+                status,
+                &connected
+                ))
+            {
+                if (connected)
+                {
+                    if (NT_SUCCESS(status = PhSvcCallControlProcess(Processes[i]->ProcessId, PhSvcControlProcessPriority, PriorityClass)))
+                        success = TRUE;
+                    else
+                        PhpShowErrorProcess(hWnd, L"set the priority of", Processes[i], status, 0);
+
+                    PhUiDisconnectFromPhSvc();
+                }
+                else
+                {
+                    cancelled = TRUE;
+                }
+            }
+            else
+            {
+                if (!PhpShowErrorProcess(hWnd, L"set the priority of", Processes[i], status, 0))
+                    break;
+            }
         }
     }
 
@@ -2261,7 +2403,7 @@ BOOLEAN PhUiCloseConnections(
     _SetTcpEntry SetTcpEntry_I;
     MIB_TCPROW tcpRow;
 
-    SetTcpEntry_I = PhGetProcAddress(L"iphlpapi.dll", "SetTcpEntry");
+    SetTcpEntry_I = PhGetModuleProcAddress(L"iphlpapi.dll", "SetTcpEntry");
 
     if (!SetTcpEntry_I)
     {
@@ -2391,7 +2533,7 @@ static BOOLEAN PhpShowErrorThread(
         PhaFormatString(
         L"Unable to %s thread %u",
         Verb,
-        (ULONG)Thread->ThreadId
+        HandleToUlong(Thread->ThreadId)
         )->Buffer,
         Status,
         Win32Result
@@ -2441,7 +2583,7 @@ BOOLEAN PhUiTerminateThreads(
 
             if (!cancelled && PhpShowErrorAndConnectToPhSvc(
                 hWnd,
-                PhaFormatString(L"Unable to terminate thread %u", (ULONG)Threads[i]->ThreadId)->Buffer,
+                PhaFormatString(L"Unable to terminate thread %u", HandleToUlong(Threads[i]->ThreadId))->Buffer,
                 status,
                 &connected
                 ))
@@ -2572,7 +2714,7 @@ BOOLEAN PhUiSuspendThreads(
 
             if (!cancelled && PhpShowErrorAndConnectToPhSvc(
                 hWnd,
-                PhaFormatString(L"Unable to suspend thread %u", (ULONG)Threads[i]->ThreadId)->Buffer,
+                PhaFormatString(L"Unable to suspend thread %u", HandleToUlong(Threads[i]->ThreadId))->Buffer,
                 status,
                 &connected
                 ))
@@ -2635,7 +2777,7 @@ BOOLEAN PhUiResumeThreads(
 
             if (!cancelled && PhpShowErrorAndConnectToPhSvc(
                 hWnd,
-                PhaFormatString(L"Unable to resume thread %u", (ULONG)Threads[i]->ThreadId)->Buffer,
+                PhaFormatString(L"Unable to resume thread %u", HandleToUlong(Threads[i]->ThreadId))->Buffer,
                 status,
                 &connected
                 ))
@@ -2726,7 +2868,7 @@ BOOLEAN PhUiSetIoPriorityThread(
         // The operation may have failed due to the lack of SeIncreaseBasePriorityPrivilege.
         if (PhpShowErrorAndConnectToPhSvc(
             hWnd,
-            PhaFormatString(L"Unable to set the I/O priority of thread %u", (ULONG)Thread->ThreadId)->Buffer,
+            PhaFormatString(L"Unable to set the I/O priority of thread %u", HandleToUlong(Thread->ThreadId))->Buffer,
             status,
             &connected
             ))
@@ -2976,7 +3118,7 @@ BOOLEAN PhUiFreeMemory(
         PWSTR verb;
         PWSTR message;
 
-        if (!(MemoryItem->Flags & (MEM_MAPPED | MEM_IMAGE)))
+        if (!(MemoryItem->Type & (MEM_MAPPED | MEM_IMAGE)))
         {
             if (Free)
             {
@@ -3022,13 +3164,13 @@ BOOLEAN PhUiFreeMemory(
 
         baseAddress = MemoryItem->BaseAddress;
 
-        if (!(MemoryItem->Flags & (MEM_MAPPED | MEM_IMAGE)))
+        if (!(MemoryItem->Type & (MEM_MAPPED | MEM_IMAGE)))
         {
             // The size needs to be 0 if we're freeing.
             if (Free)
                 regionSize = 0;
             else
-                regionSize = MemoryItem->Size;
+                regionSize = MemoryItem->RegionSize;
 
             status = NtFreeVirtualMemory(
                 processHandle,
@@ -3049,7 +3191,7 @@ BOOLEAN PhUiFreeMemory(
     {
         PWSTR message;
 
-        if (!(MemoryItem->Flags & (MEM_MAPPED | MEM_IMAGE)))
+        if (!(MemoryItem->Type & (MEM_MAPPED | MEM_IMAGE)))
         {
             if (Free)
                 message = L"Unable to free the memory region";
@@ -3089,7 +3231,7 @@ static BOOLEAN PhpShowErrorHandle(
             L"Unable to %s handle \"%s\" (0x%Ix)",
             Verb,
             Handle->BestObjectName->Buffer,
-            (ULONG)Handle->Handle
+            HandleToUlong(Handle->Handle)
             )->Buffer,
             Status,
             Win32Result
@@ -3102,7 +3244,7 @@ static BOOLEAN PhpShowErrorHandle(
             PhaFormatString(
             L"Unable to %s handle 0x%Ix",
             Verb,
-            (ULONG)Handle->Handle
+            HandleToUlong(Handle->Handle)
             )->Buffer,
             Status,
             Win32Result
@@ -3231,87 +3373,6 @@ BOOLEAN PhUiSetAttributesHandle(
     if (!NT_SUCCESS(status))
     {
         PhpShowErrorHandle(hWnd, L"set attributes of", Handle, status, 0);
-        return FALSE;
-    }
-
-    return TRUE;
-}
-
-BOOLEAN PhUiDestroyHeap(
-    _In_ HWND hWnd,
-    _In_ HANDLE ProcessId,
-    _In_ PVOID HeapHandle
-    )
-{
-    NTSTATUS status;
-    BOOLEAN cont = FALSE;
-    HANDLE processHandle;
-    HANDLE threadHandle;
-
-    if (PhGetIntegerSetting(L"EnableWarnings"))
-    {
-        cont = PhShowConfirmMessage(
-            hWnd,
-            L"destroy",
-            L"the selected heap",
-            L"Destroying heaps may cause the process to crash.",
-            FALSE
-            );
-    }
-    else
-    {
-        cont = TRUE;
-    }
-
-    if (!cont)
-        return FALSE;
-
-    if (NT_SUCCESS(status = PhOpenProcess(
-        &processHandle,
-        PROCESS_CREATE_THREAD,
-        ProcessId
-        )))
-    {
-        if (WindowsVersion >= WINDOWS_VISTA)
-        {
-            status = RtlCreateUserThread(
-                processHandle,
-                NULL,
-                FALSE,
-                0,
-                0,
-                0,
-                (PUSER_THREAD_START_ROUTINE)PhGetProcAddress(L"ntdll.dll", "RtlDestroyHeap"),
-                HeapHandle,
-                &threadHandle,
-                NULL
-                );
-        }
-        else
-        {
-            if (!(threadHandle = CreateRemoteThread(
-                processHandle,
-                NULL,
-                0,
-                (PTHREAD_START_ROUTINE)PhGetProcAddress(L"ntdll.dll", "RtlDestroyHeap"),
-                HeapHandle,
-                0,
-                NULL
-                )))
-            {
-                status = PhGetLastWin32ErrorAsNtStatus();
-            }
-        }
-
-        if (NT_SUCCESS(status))
-            NtClose(threadHandle);
-
-        NtClose(processHandle);
-    }
-
-    if (!NT_SUCCESS(status))
-    {
-        PhShowStatus(hWnd, L"Unable to destroy the heap", status, 0);
         return FALSE;
     }
 

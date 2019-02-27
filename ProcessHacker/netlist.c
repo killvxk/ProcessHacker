@@ -2,7 +2,7 @@
  * Process Hacker -
  *   network list
  *
- * Copyright (C) 2011-2012 wj32
+ * Copyright (C) 2011-2015 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -105,11 +105,7 @@ ULONG PhpNetworkNodeHashtableHashFunction(
     _In_ PVOID Entry
     )
 {
-#ifdef _M_IX86
-    return PhHashInt32((ULONG)(*(PPH_NETWORK_NODE *)Entry)->NetworkItem);
-#else
-    return PhHashInt64((ULONG64)(*(PPH_NETWORK_NODE *)Entry)->NetworkItem);
-#endif
+    return PhHashIntPtr((ULONG_PTR)(*(PPH_NETWORK_NODE *)Entry)->NetworkItem);
 }
 
 VOID PhInitializeNetworkTreeList(
@@ -310,7 +306,7 @@ VOID PhUpdateNetworkNode(
 {
     memset(NetworkNode->TextCache, 0, sizeof(PH_STRINGREF) * PHNETLC_MAXIMUM);
     PhpUpdateNetworkNodeAddressStrings(NetworkNode);
-    PhSwapReference(&NetworkNode->TooltipText, NULL);
+    PhClearReference(&NetworkNode->TooltipText);
 
     PhInvalidateTreeNewNode(&NetworkNode->Node, TN_CACHE_ICON);
     TreeNew_NodesStructured(NetworkTreeListHandle);
@@ -500,20 +496,20 @@ BOOLEAN NTAPI PhpNetworkTreeNewCallback(
                 getCellText->Text = node->LocalAddressText;
                 break;
             case PHNETLC_LOCALPORT:
-                PhInitializeStringRef(&getCellText->Text, networkItem->LocalPortString);
+                PhInitializeStringRefLongHint(&getCellText->Text, networkItem->LocalPortString);
                 break;
             case PHNETLC_REMOTEADDRESS:
                 getCellText->Text = node->RemoteAddressText;
                 break;
             case PHNETLC_REMOTEPORT:
-                PhInitializeStringRef(&getCellText->Text, networkItem->RemotePortString);
+                PhInitializeStringRefLongHint(&getCellText->Text, networkItem->RemotePortString);
                 break;
             case PHNETLC_PROTOCOL:
-                PhInitializeStringRef(&getCellText->Text, PhGetProtocolTypeName(networkItem->ProtocolType));
+                PhInitializeStringRefLongHint(&getCellText->Text, PhGetProtocolTypeName(networkItem->ProtocolType));
                 break;
             case PHNETLC_STATE:
                 if (networkItem->ProtocolType & PH_TCP_PROTOCOL_TYPE)
-                    PhInitializeStringRef(&getCellText->Text, PhGetTcpStateName(networkItem->State));
+                    PhInitializeStringRefLongHint(&getCellText->Text, PhGetTcpStateName(networkItem->State));
                 else
                     PhInitializeEmptyStringRef(&getCellText->Text);
                 break;
@@ -530,7 +526,7 @@ BOOLEAN NTAPI PhpNetworkTreeNewCallback(
                     if (networkItem->CreateTime.QuadPart != 0)
                     {
                         PhLargeIntegerToLocalSystemTime(&systemTime, &networkItem->CreateTime);
-                        PhSwapReference2(&node->TimeStampText, PhFormatDateTime(&systemTime));
+                        PhMoveReference(&node->TimeStampText, PhFormatDateTime(&systemTime));
                         getCellText->Text = node->TimeStampText->sr;
                     }
                     else
@@ -580,7 +576,7 @@ BOOLEAN NTAPI PhpNetworkTreeNewCallback(
             {
                 if (processItem = PhReferenceProcessItem(node->NetworkItem->ProcessId))
                 {
-                    node->TooltipText = PhGetProcessTooltipText(processItem);
+                    node->TooltipText = PhGetProcessTooltipText(processItem, NULL);
                     PhDereferenceObject(processItem);
                 }
             }
@@ -634,7 +630,7 @@ BOOLEAN NTAPI PhpNetworkTreeNewCallback(
             data.DefaultSortOrder = AscendingSortOrder;
             PhInitializeTreeNewColumnMenu(&data);
 
-            data.Selection = PhShowEMenu(data.Menu, hwnd, PH_EMENU_SHOW_LEFTRIGHT | PH_EMENU_SHOW_NONOTIFY,
+            data.Selection = PhShowEMenu(data.Menu, hwnd, PH_EMENU_SHOW_LEFTRIGHT,
                 PH_ALIGN_LEFT | PH_ALIGN_TOP, data.MouseEvent->ScreenLocation.x, data.MouseEvent->ScreenLocation.y);
             PhHandleTreeNewColumnMenu(&data);
             PhDeleteTreeNewColumnMenu(&data);
@@ -667,7 +663,7 @@ PPH_STRING PhpGetNetworkItemProcessName(
         return PhCreateString(L"Waiting Connections");
 
     PhInitFormatS(&format[1], L" (");
-    PhInitFormatU(&format[2], (ULONG)NetworkItem->ProcessId);
+    PhInitFormatU(&format[2], HandleToUlong(NetworkItem->ProcessId));
     PhInitFormatC(&format[3], ')');
 
     if (NetworkItem->ProcessName)
@@ -685,12 +681,12 @@ VOID PhpUpdateNetworkNodeAddressStrings(
     if (NetworkNode->NetworkItem->LocalHostString)
         NetworkNode->LocalAddressText = NetworkNode->NetworkItem->LocalHostString->sr;
     else
-        PhInitializeStringRef(&NetworkNode->LocalAddressText, NetworkNode->NetworkItem->LocalAddressString);
+        PhInitializeStringRefLongHint(&NetworkNode->LocalAddressText, NetworkNode->NetworkItem->LocalAddressString);
 
     if (NetworkNode->NetworkItem->RemoteHostString)
         NetworkNode->RemoteAddressText = NetworkNode->NetworkItem->RemoteHostString->sr;
     else
-        PhInitializeStringRef(&NetworkNode->RemoteAddressText, NetworkNode->NetworkItem->RemoteAddressString);
+        PhInitializeStringRefLongHint(&NetworkNode->RemoteAddressText, NetworkNode->NetworkItem->RemoteAddressString);
 }
 
 PPH_NETWORK_ITEM PhGetSelectedNetworkItem(
@@ -788,9 +784,9 @@ VOID PhWriteNetworkList(
         PPH_STRING line;
 
         line = lines->Items[i];
-        PhWriteStringAsAnsiFileStream(FileStream, &line->sr);
+        PhWriteStringAsUtf8FileStream(FileStream, &line->sr);
         PhDereferenceObject(line);
-        PhWriteStringAsAnsiFileStream2(FileStream, L"\r\n");
+        PhWriteStringAsUtf8FileStream2(FileStream, L"\r\n");
     }
 
     PhDereferenceObject(lines);

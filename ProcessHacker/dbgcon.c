@@ -28,6 +28,7 @@
 
 #include <phapp.h>
 #include <phintrnl.h>
+#include <symprv.h>
 #include <refp.h>
 
 typedef struct _STRING_TABLE_ENTRY
@@ -106,9 +107,9 @@ VOID PhCloseDebugConsole(
     VOID
     )
 {
-    fclose(stdout);
-    fclose(stderr);
-    fclose(stdin);
+    freopen("NUL", "w", stdout);
+    freopen("NUL", "w", stderr);
+    freopen("NUL", "r", stdin);
 
     FreeConsole();
 }
@@ -144,7 +145,7 @@ static PWSTR PhpGetSymbolForAddress(
     _In_ PVOID Address
     )
 {
-    return ((PPH_STRING)PHA_DEREFERENCE(PhGetSymbolFromAddress(
+    return ((PPH_STRING)PhAutoDereferenceObject(PhGetSymbolFromAddress(
         DebugConsoleSymbolProvider, (ULONG64)Address, NULL, NULL, NULL, NULL
         )))->Buffer;
 }
@@ -154,63 +155,66 @@ static VOID PhpPrintObjectInfo(
     _In_ LONG RefToSubtract
     )
 {
+    PVOID object;
+    PPH_OBJECT_TYPE objectType;
     WCHAR c = ' ';
 
-    wprintf(L"%Ix", PhObjectHeaderToObject(ObjectHeader));
+    object = PhObjectHeaderToObject(ObjectHeader);
+    wprintf(L"%Ix", (ULONG_PTR)object);
+    objectType = PhGetObjectType(object);
 
-    wprintf(L"\t% 20s", ObjectHeader->Type->Name);
+    wprintf(L"\t% 20s", objectType->Name);
 
-    if (ObjectHeader->Flags & PHOBJ_FROM_SMALL_FREE_LIST)
+    if (ObjectHeader->Flags & PH_OBJECT_FROM_SMALL_FREE_LIST)
         c = 'f';
-    else if (ObjectHeader->Flags & PHOBJ_FROM_TYPE_FREE_LIST)
+    else if (ObjectHeader->Flags & PH_OBJECT_FROM_TYPE_FREE_LIST)
         c = 'F';
 
     wprintf(L"\t%4d %c", ObjectHeader->RefCount - RefToSubtract, c);
 
-    if (!ObjectHeader->Type)
+    if (!objectType)
     {
         // Dummy
     }
-    else if (ObjectHeader->Type == PhObjectTypeObject)
+    else if (objectType == PhObjectTypeObject)
     {
-        wprintf(L"\t%.32s", ((PPH_OBJECT_TYPE)PhObjectHeaderToObject(ObjectHeader))->Name);
+        wprintf(L"\t%.32s", ((PPH_OBJECT_TYPE)object)->Name);
     }
-    else if (ObjectHeader->Type == PhStringType)
+    else if (objectType == PhStringType)
     {
-        wprintf(L"\t%.32s", ((PPH_STRING)PhObjectHeaderToObject(ObjectHeader))->Buffer);
+        wprintf(L"\t%.32s", ((PPH_STRING)object)->Buffer);
     }
-    else if (ObjectHeader->Type == PhAnsiStringType)
+    else if (objectType == PhBytesType)
     {
-        wprintf(L"\t%.32S", ((PPH_ANSI_STRING)PhObjectHeaderToObject(ObjectHeader))->Buffer);
+        wprintf(L"\t%.32S", ((PPH_BYTES)object)->Buffer);
     }
-    else if (ObjectHeader->Type == PhListType)
+    else if (objectType == PhListType)
     {
-        wprintf(L"\tCount: %u", ((PPH_LIST)PhObjectHeaderToObject(ObjectHeader))->Count);
+        wprintf(L"\tCount: %u", ((PPH_LIST)object)->Count);
     }
-    else if (ObjectHeader->Type == PhPointerListType)
+    else if (objectType == PhPointerListType)
     {
-        wprintf(L"\tCount: %u", ((PPH_POINTER_LIST)PhObjectHeaderToObject(ObjectHeader))->Count);
+        wprintf(L"\tCount: %u", ((PPH_POINTER_LIST)object)->Count);
     }
-    else if (ObjectHeader->Type == PhHashtableType)
+    else if (objectType == PhHashtableType)
     {
-        wprintf(L"\tCount: %u", ((PPH_HASHTABLE)PhObjectHeaderToObject(ObjectHeader))->Count);
+        wprintf(L"\tCount: %u", ((PPH_HASHTABLE)object)->Count);
     }
-    else if (ObjectHeader->Type == PhProcessItemType)
+    else if (objectType == PhProcessItemType)
     {
         wprintf(
-            L"\t%.28s (%Id)",
-            ((PPH_PROCESS_ITEM)PhObjectHeaderToObject(ObjectHeader))->ProcessName->Buffer,
-            (ULONG)((PPH_PROCESS_ITEM)PhObjectHeaderToObject(ObjectHeader))->ProcessId
+            L"\t%.28s (%d)",
+            ((PPH_PROCESS_ITEM)object)->ProcessName->Buffer,
+            HandleToLong(((PPH_PROCESS_ITEM)object)->ProcessId)
             );
     }
-    else if (ObjectHeader->Type == PhServiceItemType)
+    else if (objectType == PhServiceItemType)
     {
-        wprintf(L"\t%s", ((PPH_SERVICE_ITEM)PhObjectHeaderToObject(ObjectHeader))->Name->Buffer);
+        wprintf(L"\t%s", ((PPH_SERVICE_ITEM)object)->Name->Buffer);
     }
-    else if (ObjectHeader->Type == PhThreadItemType)
+    else if (objectType == PhThreadItemType)
     {
-        wprintf(L"\tTID: %u",
-            (ULONG)((PPH_THREAD_ITEM)PhObjectHeaderToObject(ObjectHeader))->ThreadId);
+        wprintf(L"\tTID: %u", HandleToUlong(((PPH_THREAD_ITEM)object)->ThreadId));
     }
 
     wprintf(L"\n");
@@ -220,30 +224,37 @@ static VOID PhpDumpObjectInfo(
     _In_ PPH_OBJECT_HEADER ObjectHeader
     )
 {
+    PVOID object;
+    PPH_OBJECT_TYPE objectType;
+
+    object = PhObjectHeaderToObject(ObjectHeader);
+    objectType = PhGetObjectType(object);
+
     __try
     {
-        wprintf(L"Type: %s\n", ObjectHeader->Type->Name);
+        wprintf(L"Type: %s\n", objectType->Name);
         wprintf(L"Reference count: %d\n", ObjectHeader->RefCount);
         wprintf(L"Flags: %x\n", ObjectHeader->Flags);
-        wprintf(L"Size / Next to free: %Iu / %Ix\n", ObjectHeader->Size, ObjectHeader->NextToFree);
 
-        if (ObjectHeader->Type == PhObjectTypeObject)
+        if (objectType == PhObjectTypeObject)
         {
-            wprintf(L"Name: %s\n", ((PPH_OBJECT_TYPE)PhObjectHeaderToObject(ObjectHeader))->Name);
-            wprintf(L"Number of objects: %u\n", ((PPH_OBJECT_TYPE)PhObjectHeaderToObject(ObjectHeader))->NumberOfObjects);
-            wprintf(L"Free list count: %u\n", ((PPH_OBJECT_TYPE)PhObjectHeaderToObject(ObjectHeader))->FreeList.Count);
+            wprintf(L"Name: %s\n", ((PPH_OBJECT_TYPE)object)->Name);
+            wprintf(L"Number of objects: %u\n", ((PPH_OBJECT_TYPE)object)->NumberOfObjects);
+            wprintf(L"Flags: %u\n", ((PPH_OBJECT_TYPE)object)->Flags);
+            wprintf(L"Type index: %u\n", ((PPH_OBJECT_TYPE)object)->TypeIndex);
+            wprintf(L"Free list count: %u\n", ((PPH_OBJECT_TYPE)object)->FreeList.Count);
         }
-        else if (ObjectHeader->Type == PhStringType)
+        else if (objectType == PhStringType)
         {
-            wprintf(L"%s\n", ((PPH_STRING)PhObjectHeaderToObject(ObjectHeader))->Buffer);
+            wprintf(L"%s\n", ((PPH_STRING)object)->Buffer);
         }
-        else if (ObjectHeader->Type == PhAnsiStringType)
+        else if (objectType == PhBytesType)
         {
-            wprintf(L"%S\n", ((PPH_ANSI_STRING)PhObjectHeaderToObject(ObjectHeader))->Buffer);
+            wprintf(L"%S\n", ((PPH_BYTES)object)->Buffer);
         }
-        else if (ObjectHeader->Type == PhHashtableType)
+        else if (objectType == PhHashtableType)
         {
-            PhpPrintHashtableStatistics((PPH_HASHTABLE)PhObjectHeaderToObject(ObjectHeader));
+            PhpPrintHashtableStatistics((PPH_HASHTABLE)object);
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -292,7 +303,7 @@ static VOID PhpPrintHashtableStatistics(
 
         if (count != 0)
         {
-            wprintf(L"%u: ", i);
+            wprintf(L"%lu: ", i);
 
             // Print out the entry indicies.
 
@@ -300,7 +311,7 @@ static VOID PhpPrintHashtableStatistics(
 
             while (index != -1)
             {
-                wprintf(L"%u", index);
+                wprintf(L"%lu", index);
 
                 index = PH_HASHTABLE_GET_ENTRY(Hashtable, index)->Next;
                 count--;
@@ -317,7 +328,7 @@ static VOID PhpPrintHashtableStatistics(
         }
     }
 
-    wprintf(L"\nExpected lookup misses: %u\n", expectedLookupMisses);
+    wprintf(L"\nExpected lookup misses: %lu\n", expectedLookupMisses);
 }
 
 #ifdef DEBUG
@@ -408,7 +419,7 @@ static NTSTATUS PhpLeakEnumerationRoutine(
 
     if (ShowAllLeaks || HeapHandle == PhHeapHandle)
     {
-        wprintf(L"Leak at 0x%Ix (%Iu bytes). Stack trace:\n", BaseAddress, BlockSize);
+        wprintf(L"Leak at 0x%Ix (%Iu bytes). Stack trace:\n", (ULONG_PTR)BaseAddress, BlockSize);
 
         for (i = 0; i < StackTraceDepth; i++)
         {
@@ -647,6 +658,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
     )
 {
     PH_AUTO_POOL autoPool;
+    BOOLEAN exit = FALSE;
 
     PhInitializeAutoPool(&autoPool);
 
@@ -679,7 +691,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
 
     wprintf(L"Press Ctrl+C or type \"exit\" to close the debug console. Type \"help\" for a list of commands.\n");
 
-    while (TRUE)
+    while (!exit)
     {
         static PWSTR delims = L" \t";
         static PWSTR commandDebugOnly = L"This command is not available on non-debug builds.\n";
@@ -696,7 +708,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
 
         // Remove the terminating new line character.
 
-        inputLength = (ULONG)wcslen(line);
+        inputLength = (ULONG)PhCountStringZ(line);
 
         if (inputLength != 0)
             line[inputLength - 1] = 0;
@@ -708,7 +720,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
         {
             continue;
         }
-        else if (WSTR_IEQUAL(command, L"help"))
+        else if (PhEqualStringZ(command, L"help", TRUE))
         {
             wprintf(
                 L"Commands:\n"
@@ -736,11 +748,12 @@ NTSTATUS PhpDebugConsoleThreadStart(
                 L"mem\n"
                 );
         }
-        else if (WSTR_IEQUAL(command, L"exit"))
+        else if (PhEqualStringZ(command, L"exit", TRUE))
         {
             PhCloseDebugConsole();
+            exit = TRUE;
         }
-        else if (WSTR_IEQUAL(command, L"testperf"))
+        else if (PhEqualStringZ(command, L"testperf", TRUE))
         {
             STOPWATCH stopwatch;
             ULONG i;
@@ -820,7 +833,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
 
             wprintf(L"Queued lock: %ums\n", PhGetMillisecondsStopwatch(&stopwatch));
         }
-        else if (WSTR_IEQUAL(command, L"testlocks"))
+        else if (PhEqualStringZ(command, L"testlocks", TRUE))
         {
             RW_TEST_CONTEXT testContext;
             PH_FAST_LOCK fastLock;
@@ -865,7 +878,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
             PhInitializeQueuedLock(&queuedLock);
             PhpTestRwLock(&testContext);
         }
-        else if (WSTR_IEQUAL(command, L"stats"))
+        else if (PhEqualStringZ(command, L"stats", TRUE))
         {
 #ifdef DEBUG
             wprintf(L"Object small free list count: %u\n", PhObjectSmallFreeList.Count);
@@ -901,16 +914,16 @@ NTSTATUS PhpDebugConsoleThreadStart(
             wprintf(commandDebugOnly);
 #endif
         }
-        else if (WSTR_IEQUAL(command, L"objects"))
+        else if (PhEqualStringZ(command, L"objects", TRUE))
         {
 #ifdef DEBUG
             PWSTR typeFilter = wcstok_s(NULL, delims, &context);
             PLIST_ENTRY currentEntry;
             ULONG totalNumberOfObjects = 0;
-            SIZE_T totalNumberOfBytes = 0;
+            //SIZE_T totalNumberOfBytes = 0;
 
             if (typeFilter)
-                wcslwr(typeFilter);
+                _wcslwr(typeFilter);
 
             PhAcquireQueuedLockShared(&PhDbgObjectListLock);
 
@@ -931,12 +944,12 @@ NTSTATUS PhpDebugConsoleThreadStart(
                 }
 
                 totalNumberOfObjects++;
-                totalNumberOfBytes += objectHeader->Size;
+                //totalNumberOfBytes += objectHeader->Size;
 
                 if (typeFilter)
                 {
-                    wcscpy_s(typeName, sizeof(typeName) / 2, objectHeader->Type->Name);
-                    wcslwr(typeName);
+                    wcscpy_s(typeName, sizeof(typeName) / 2, PhGetObjectType(PhObjectHeaderToObject(objectHeader))->Name);
+                    _wcslwr(typeName);
                 }
 
                 if (
@@ -954,18 +967,18 @@ NTSTATUS PhpDebugConsoleThreadStart(
             PhReleaseQueuedLockShared(&PhDbgObjectListLock);
 
             wprintf(L"\n");
-            wprintf(L"Total number: %u\n", totalNumberOfObjects);
-            wprintf(L"Total size (excl. header): %s\n",
-                ((PPH_STRING)PHA_DEREFERENCE(PhFormatSize(totalNumberOfBytes, 1)))->Buffer);
+            wprintf(L"Total number: %lu\n", totalNumberOfObjects);
+            /*wprintf(L"Total size (excl. header): %s\n",
+                ((PPH_STRING)PhAutoDereferenceObject(PhFormatSize(totalNumberOfBytes, 1)))->Buffer);*/
             wprintf(L"Total overhead (header): %s\n",
-                ((PPH_STRING)PHA_DEREFERENCE(
-                PhFormatSize(PhpAddObjectHeaderSize(0) * totalNumberOfObjects, 1)
+                ((PPH_STRING)PhAutoDereferenceObject(
+                PhFormatSize(PhAddObjectHeaderSize(0) * totalNumberOfObjects, 1)
                 ))->Buffer);
 #else
             wprintf(commandDebugOnly);
 #endif
         }
-        else if (WSTR_IEQUAL(command, L"objtrace"))
+        else if (PhEqualStringZ(command, L"objtrace", TRUE))
         {
 #ifdef DEBUG
             PWSTR objectAddress = wcstok_s(NULL, delims, &context);
@@ -996,7 +1009,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
                     PPH_STRING message;
 
                     message = PhGetNtMessage(GetExceptionCode());
-                    PHA_DEREFERENCE(message);
+                    PhAutoDereferenceObject(message);
                     wprintf(L"Error: %s\n", PhGetString(message));
 
                     goto EndCommand;
@@ -1018,7 +1031,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
             wprintf(commandDebugOnly);
 #endif
         }
-        else if (WSTR_IEQUAL(command, L"objmksnap"))
+        else if (PhEqualStringZ(command, L"objmksnap", TRUE))
         {
 #ifdef DEBUG
             PLIST_ENTRY currentEntry;
@@ -1051,7 +1064,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
             wprintf(commandDebugOnly);
 #endif
         }
-        else if (WSTR_IEQUAL(command, L"objcmpsnap"))
+        else if (PhEqualStringZ(command, L"objcmpsnap", TRUE))
         {
 #ifdef DEBUG
             PLIST_ENTRY currentEntry;
@@ -1106,7 +1119,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
             wprintf(commandDebugOnly);
 #endif
         }
-        else if (WSTR_IEQUAL(command, L"objmknew"))
+        else if (PhEqualStringZ(command, L"objmknew", TRUE))
         {
 #ifdef DEBUG
             PhAcquireQueuedLockExclusive(&NewObjectListLock);
@@ -1120,7 +1133,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
             wprintf(commandDebugOnly);
 #endif
         }
-        else if (WSTR_IEQUAL(command, L"objdelnew"))
+        else if (PhEqualStringZ(command, L"objdelnew", TRUE))
         {
 #ifdef DEBUG
             PhAcquireQueuedLockExclusive(&NewObjectListLock);
@@ -1130,7 +1143,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
             wprintf(commandDebugOnly);
 #endif
         }
-        else if (WSTR_IEQUAL(command, L"objviewnew"))
+        else if (PhEqualStringZ(command, L"objviewnew", TRUE))
         {
 #ifdef DEBUG
             ULONG i;
@@ -1154,7 +1167,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
             wprintf(commandDebugOnly);
 #endif
         }
-        else if (WSTR_IEQUAL(command, L"dumpobj"))
+        else if (PhEqualStringZ(command, L"dumpobj", TRUE))
         {
             PWSTR addressString = wcstok_s(NULL, delims, &context);
             PH_STRINGREF addressStringRef;
@@ -1170,7 +1183,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
                 PhpDumpObjectInfo((PPH_OBJECT_HEADER)PhObjectToObjectHeader((PVOID)address));
             }
         }
-        else if (WSTR_IEQUAL(command, L"dumpautopool"))
+        else if (PhEqualStringZ(command, L"dumpautopool", TRUE))
         {
             PWSTR addressString = wcstok_s(NULL, delims, &context);
             PH_STRINGREF addressStringRef;
@@ -1208,7 +1221,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
                 }
             }
         }
-        else if (WSTR_IEQUAL(command, L"threads"))
+        else if (PhEqualStringZ(command, L"threads", TRUE))
         {
 #ifdef DEBUG
             PLIST_ENTRY currentEntry;
@@ -1223,10 +1236,10 @@ NTSTATUS PhpDebugConsoleThreadStart(
 
                 dbg = CONTAINING_RECORD(currentEntry, PHP_BASE_THREAD_DBG, ListEntry);
 
-                wprintf(L"Thread %u\n", (ULONG)dbg->ClientId.UniqueThread);
+                wprintf(L"Thread %u\n", HandleToUlong(dbg->ClientId.UniqueThread));
                 wprintf(L"\tStart Address: %s\n", PhpGetSymbolForAddress(dbg->StartAddress));
-                wprintf(L"\tParameter: %Ix\n", dbg->Parameter);
-                wprintf(L"\tCurrent auto-pool: %Ix\n", dbg->CurrentAutoPool);
+                wprintf(L"\tParameter: %Ix\n", (ULONG_PTR)dbg->Parameter);
+                wprintf(L"\tCurrent auto-pool: %Ix\n", (ULONG_PTR)dbg->CurrentAutoPool);
 
                 currentEntry = currentEntry->Flink;
             }
@@ -1236,7 +1249,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
             wprintf(commandDebugOnly);
 #endif
         }
-        else if (WSTR_IEQUAL(command, L"provthreads"))
+        else if (PhEqualStringZ(command, L"provthreads", TRUE))
         {
 #ifdef DEBUG
             ULONG i;
@@ -1254,7 +1267,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
                     if (providerThread->ThreadHandle)
                     {
                         PhGetThreadBasicInformation(providerThread->ThreadHandle, &basicInfo);
-                        wprintf(L"Thread %u\n", (ULONG)basicInfo.ClientId.UniqueThread);
+                        wprintf(L"Thread %u\n", HandleToUlong(basicInfo.ClientId.UniqueThread));
                     }
                     else
                     {
@@ -1271,7 +1284,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
 
                         registration = CONTAINING_RECORD(providerEntry, PH_PROVIDER_REGISTRATION, ListEntry);
 
-                        wprintf(L"\tProvider registration at %Ix\n", registration);
+                        wprintf(L"\tProvider registration at %Ix\n", (ULONG_PTR)registration);
                         wprintf(L"\t\tEnabled: %s\n", registration->Enabled ? L"Yes" : L"No");
                         wprintf(L"\t\tFunction: %s\n", PhpGetSymbolForAddress(registration->Function));
 
@@ -1295,7 +1308,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
             wprintf(commandDebugOnly);
 #endif
         }
-        else if (WSTR_IEQUAL(command, L"workqueues"))
+        else if (PhEqualStringZ(command, L"workqueues", TRUE))
         {
 #ifdef DEBUG
             ULONG i;
@@ -1315,7 +1328,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
                     wprintf(L"No work timeout: %d\n", workQueue->NoWorkTimeout);
 
                     wprintf(L"Current threads: %u\n", workQueue->CurrentThreads);
-                    wprintf(L"Busy threads: %u\n", workQueue->BusyThreads);
+                    wprintf(L"Busy count: %u\n", workQueue->BusyCount);
 
                     PhAcquireQueuedLockExclusive(&workQueue->QueueLock);
 
@@ -1328,9 +1341,9 @@ NTSTATUS PhpDebugConsoleThreadStart(
 
                         workQueueItem = CONTAINING_RECORD(workQueueItemEntry, PH_WORK_QUEUE_ITEM, ListEntry);
 
-                        wprintf(L"\tWork queue item at %Ix\n", workQueueItem);
+                        wprintf(L"\tWork queue item at %Ix\n", (ULONG_PTR)workQueueItem);
                         wprintf(L"\t\tFunction: %s\n", PhpGetSymbolForAddress(workQueueItem->Function));
-                        wprintf(L"\t\tContext: %Ix\n", workQueueItem->Context);
+                        wprintf(L"\t\tContext: %Ix\n", (ULONG_PTR)workQueueItem->Context);
 
                         workQueueItemEntry = workQueueItemEntry->Blink;
                     }
@@ -1346,7 +1359,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
             wprintf(commandDebugOnly);
 #endif
         }
-        else if (WSTR_IEQUAL(command, L"procrecords"))
+        else if (PhEqualStringZ(command, L"procrecords", TRUE))
         {
             PPH_PROCESS_RECORD record;
             ULONG i;
@@ -1361,15 +1374,15 @@ NTSTATUS PhpDebugConsoleThreadStart(
 
                 PhLargeIntegerToLocalSystemTime(&systemTime, &record->CreateTime);
                 wprintf(L"Records for %s %s:\n",
-                    ((PPH_STRING)PHA_DEREFERENCE(PhFormatDate(&systemTime, NULL)))->Buffer,
-                    ((PPH_STRING)PHA_DEREFERENCE(PhFormatTime(&systemTime, NULL)))->Buffer
+                    ((PPH_STRING)PhAutoDereferenceObject(PhFormatDate(&systemTime, NULL)))->Buffer,
+                    ((PPH_STRING)PhAutoDereferenceObject(PhFormatTime(&systemTime, NULL)))->Buffer
                     );
 
                 startRecord = record;
 
                 do
                 {
-                    wprintf(L"\tRecord at %Ix: %s (%u) (refs: %d)\n", record, record->ProcessName->Buffer, (ULONG)record->ProcessId, record->RefCount);
+                    wprintf(L"\tRecord at %Ix: %s (%u) (refs: %d)\n", (ULONG_PTR)record, record->ProcessName->Buffer, HandleToUlong(record->ProcessId), record->RefCount);
 
                     if (record->FileName)
                         wprintf(L"\t\t%s\n", record->FileName->Buffer);
@@ -1380,7 +1393,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
 
             PhReleaseQueuedLockShared(&PhProcessRecordListLock);
         }
-        else if (WSTR_IEQUAL(command, L"procitem"))
+        else if (PhEqualStringZ(command, L"procitem", TRUE))
         {
             PWSTR filterString;
             PH_STRINGREF filterRef;
@@ -1424,11 +1437,11 @@ NTSTATUS PhpDebugConsoleThreadStart(
                     (imageNameFilter && PhMatchWildcards(imageNameFilter, process->ProcessName->Buffer, TRUE))
                     )
                 {
-                    wprintf(L"Process item at %Ix: %s (%u)\n", process, process->ProcessName->Buffer, (ULONG)process->ProcessId);
-                    wprintf(L"\tRecord at %Ix\n", process->Record);
-                    wprintf(L"\tQuery handle %Ix\n", process->QueryHandle);
-                    wprintf(L"\tFile name at %Ix: %s\n", process->FileName, PhGetStringOrDefault(process->FileName, L"(null)"));
-                    wprintf(L"\tCommand line at %Ix: %s\n", process->CommandLine, PhGetStringOrDefault(process->CommandLine, L"(null)"));
+                    wprintf(L"Process item at %Ix: %s (%u)\n", (ULONG_PTR)process, process->ProcessName->Buffer, HandleToUlong(process->ProcessId));
+                    wprintf(L"\tRecord at %Ix\n", (ULONG_PTR)process->Record);
+                    wprintf(L"\tQuery handle %Ix\n", (ULONG_PTR)process->QueryHandle);
+                    wprintf(L"\tFile name at %Ix: %s\n", (ULONG_PTR)process->FileName, PhGetStringOrDefault(process->FileName, L"(null)"));
+                    wprintf(L"\tCommand line at %Ix: %s\n", (ULONG_PTR)process->CommandLine, PhGetStringOrDefault(process->CommandLine, L"(null)"));
                     wprintf(L"\tFlags: %u\n", process->Flags);
                     wprintf(L"\n");
                 }
@@ -1436,7 +1449,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
 
             PhDereferenceObjects(processes, numberOfProcesses);
         }
-        else if (WSTR_IEQUAL(command, L"uniquestr"))
+        else if (PhEqualStringZ(command, L"uniquestr", TRUE))
         {
 #ifdef DEBUG
             PLIST_ENTRY currentEntry;
@@ -1469,7 +1482,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
                 string = PhObjectHeaderToObject(objectHeader);
 
                 // Make sure this is a string.
-                if (objectHeader->Type != PhStringType)
+                if (PhGetObjectType(string) != PhStringType)
                     continue;
 
                 // Make sure the object isn't being destroyed.
@@ -1531,7 +1544,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
             wprintf(commandDebugOnly);
 #endif
         }
-        else if (WSTR_IEQUAL(command, L"enableleakdetect"))
+        else if (PhEqualStringZ(command, L"enableleakdetect", TRUE))
         {
             HEAP_DEBUGGING_INFORMATION debuggingInfo;
 
@@ -1544,12 +1557,12 @@ NTSTATUS PhpDebugConsoleThreadStart(
                 wprintf(L"Unable to initialize heap debugging. Make sure that you are using Windows 7 or above.");
             }
         }
-        else if (WSTR_IEQUAL(command, L"leakdetect"))
+        else if (PhEqualStringZ(command, L"leakdetect", TRUE))
         {
             VOID (NTAPI *rtlDetectHeapLeaks)(VOID);
             PWSTR options = wcstok_s(NULL, delims, &context);
 
-            rtlDetectHeapLeaks = PhGetProcAddress(L"ntdll.dll", "RtlDetectHeapLeaks");
+            rtlDetectHeapLeaks = PhGetModuleProcAddress(L"ntdll.dll", "RtlDetectHeapLeaks");
 
             if (!(NtCurrentPeb()->NtGlobalFlag & FLG_USER_STACK_TRACE_DB))
             {
@@ -1560,7 +1573,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
 
             if (options)
             {
-                if (WSTR_IEQUAL(options, L"all"))
+                if (PhEqualStringZ(options, L"all", TRUE))
                     ShowAllLeaks = TRUE;
             }
 
@@ -1572,10 +1585,10 @@ NTSTATUS PhpDebugConsoleThreadStart(
                 rtlDetectHeapLeaks();
                 InLeakDetection = FALSE;
 
-                wprintf(L"\nNumber of leaks: %u (%u displayed)\n", NumberOfLeaks, NumberOfLeaksShown);
+                wprintf(L"\nNumber of leaks: %lu (%lu displayed)\n", NumberOfLeaks, NumberOfLeaksShown);
             }
         }
-        else if (WSTR_IEQUAL(command, L"mem"))
+        else if (PhEqualStringZ(command, L"mem", TRUE))
         {
             PWSTR addressString;
             PWSTR bytesString;
@@ -1628,7 +1641,7 @@ NTSTATUS PhpDebugConsoleThreadStart(
                     }
                     __except (EXCEPTION_EXECUTE_HANDLER)
                     {
-                        wprintf(L"Error reading address near %Ix.\n", address);
+                        wprintf(L"Error reading address near %Ix.\n", (ULONG_PTR)address);
                         goto EndCommand;
                     }
 

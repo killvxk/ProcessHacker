@@ -2,7 +2,7 @@
  * Process Hacker -
  *   log window
  *
- * Copyright (C) 2010-2011 wj32
+ * Copyright (C) 2010-2016 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -74,7 +74,7 @@ static VOID PhpUpdateLogList(
     )
 {
     ListViewCount = PhLogBuffer.Count;
-    ListView_SetItemCountEx(ListViewHandle, ListViewCount, LVSICF_NOINVALIDATEALL | LVSICF_NOSCROLL);
+    ListView_SetItemCountEx(ListViewHandle, ListViewCount, LVSICF_NOSCROLL);
 
     if (ListViewCount >= 2 && Button_GetCheck(GetDlgItem(PhLogWindowHandle, IDC_AUTOSCROLL)) == BST_CHECKED)
     {
@@ -121,12 +121,12 @@ static PPH_STRING PhpGetStringForSelectedLogEntries(
 
         PhLargeIntegerToLocalSystemTime(&systemTime, &entry->Time);
         temp = PhFormatDateTime(&systemTime);
-        PhAppendStringBuilder(&stringBuilder, temp);
+        PhAppendStringBuilder(&stringBuilder, &temp->sr);
         PhDereferenceObject(temp);
         PhAppendStringBuilder2(&stringBuilder, L": ");
 
         temp = PhFormatLogEntry(entry);
-        PhAppendStringBuilder(&stringBuilder, temp);
+        PhAppendStringBuilder(&stringBuilder, &temp->sr);
         PhDereferenceObject(temp);
         PhAppendStringBuilder2(&stringBuilder, L"\r\n");
 
@@ -235,7 +235,7 @@ INT_PTR CALLBACK PhpLogDlgProc(
                     PhSetClipboardString(hwndDlg, &string->sr);
                     PhDereferenceObject(string);
 
-                    SetFocus(ListViewHandle);
+                    SendMessage(hwndDlg, WM_NEXTDLGCTL, (WPARAM)ListViewHandle, TRUE);
                 }
                 break;
             case IDC_SAVE:
@@ -260,7 +260,7 @@ INT_PTR CALLBACK PhpLogDlgProc(
                         PPH_STRING string;
 
                         fileName = PhGetFileDialogFileName(fileDialog);
-                        PhaDereferenceObject(fileName);
+                        PhAutoDereferenceObject(fileName);
 
                         if (NT_SUCCESS(status = PhCreateFileStream(
                             &fileStream,
@@ -271,10 +271,11 @@ INT_PTR CALLBACK PhpLogDlgProc(
                             0
                             )))
                         {
+                            PhWriteStringAsUtf8FileStream(fileStream, &PhUnicodeByteOrderMark);
                             PhWritePhTextHeader(fileStream);
 
                             string = PhpGetStringForSelectedLogEntries(TRUE);
-                            PhWriteStringAsAnsiFileStreamEx(fileStream, string->Buffer, string->Length);
+                            PhWriteStringAsUtf8FileStreamEx(fileStream, string->Buffer, string->Length);
                             PhDereferenceObject(string);
 
                             PhDereferenceObject(fileStream);

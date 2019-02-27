@@ -2,7 +2,7 @@
  * Process Hacker -
  *   item tooltips
  *
- * Copyright (C) 2010-2013 wj32
+ * Copyright (C) 2010-2015 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -22,34 +22,38 @@
 
 #include <phapp.h>
 #include <phplug.h>
+#include <verify.h>
 #define CINTERFACE
 #define COBJMACROS
 #include <taskschd.h>
+
+VOID PhpFillUmdfDrivers(
+    _In_ PPH_PROCESS_ITEM Process,
+    _Inout_ PPH_STRING_BUILDER Drivers
+    );
 
 VOID PhpFillRunningTasks(
     _In_ PPH_PROCESS_ITEM Process,
     _Inout_ PPH_STRING_BUILDER Tasks
     );
 
+static PH_STRINGREF StandardIndent = PH_STRINGREF_INIT(L"    ");
+
 VOID PhpAppendStringWithLineBreaks(
     _Inout_ PPH_STRING_BUILDER StringBuilder,
     _In_ PPH_STRINGREF String,
     _In_ ULONG CharactersPerLine,
-    _In_opt_ PWSTR IndentAfterFirstLine
+    _In_opt_ PPH_STRINGREF IndentAfterFirstLine
     )
 {
     PH_STRINGREF line;
     SIZE_T bytesPerLine;
     BOOLEAN afterFirstLine;
     SIZE_T bytesToAppend;
-    SIZE_T indentAfterFirstLineLength;
 
     line = *String;
     bytesPerLine = CharactersPerLine * sizeof(WCHAR);
     afterFirstLine = FALSE;
-
-    if (IndentAfterFirstLine)
-        indentAfterFirstLineLength = wcslen(IndentAfterFirstLine) * sizeof(WCHAR);
 
     while (line.Length != 0)
     {
@@ -63,14 +67,12 @@ VOID PhpAppendStringWithLineBreaks(
             PhAppendCharStringBuilder(StringBuilder, '\n');
 
             if (IndentAfterFirstLine)
-                PhAppendStringBuilderEx(StringBuilder, IndentAfterFirstLine, indentAfterFirstLineLength);
+                PhAppendStringBuilder(StringBuilder, IndentAfterFirstLine);
         }
 
         PhAppendStringBuilderEx(StringBuilder, line.Buffer, bytesToAppend);
         afterFirstLine = TRUE;
-
-        line.Buffer = (PWCHAR)((PCHAR)line.Buffer + bytesToAppend);
-        line.Length -= bytesToAppend;
+        PhSkipStringRef(&line, bytesToAppend);
     }
 }
 
@@ -86,11 +88,14 @@ static int __cdecl ServiceForTooltipCompare(
 }
 
 PPH_STRING PhGetProcessTooltipText(
-    _In_ PPH_PROCESS_ITEM Process
+    _In_ PPH_PROCESS_ITEM Process,
+    _Out_opt_ PULONG ValidToTickCount
     )
 {
     PH_STRING_BUILDER stringBuilder;
+    ULONG validForMs = 60 * 60 * 1000; // 1 hour
     PPH_STRING tempString;
+    PH_KNOWN_PROCESS_TYPE knownProcessType = UnknownProcessType;
 
     PhInitializeStringBuilder(&stringBuilder, 200);
 
@@ -113,14 +118,14 @@ PPH_STRING PhGetProcessTooltipText(
     tempString = PhFormatImageVersionInfo(
         Process->FileName,
         &Process->VersionInfo,
-        L"    ",
+        &StandardIndent,
         0
         );
 
     if (!PhIsNullOrEmptyString(tempString))
     {
         PhAppendStringBuilder2(&stringBuilder, L"File:\n");
-        PhAppendStringBuilder(&stringBuilder, tempString);
+        PhAppendStringBuilder(&stringBuilder, &tempString->sr);
         PhAppendCharStringBuilder(&stringBuilder, '\n');
     }
 
@@ -129,15 +134,14 @@ PPH_STRING PhGetProcessTooltipText(
 
     // Known command line information
 
+    if (Process->QueryHandle)
+        PhGetProcessKnownType(Process->QueryHandle, &knownProcessType);
+
     if (Process->CommandLine && Process->QueryHandle)
     {
-        PH_KNOWN_PROCESS_TYPE knownProcessType;
         PH_KNOWN_PROCESS_COMMAND_LINE knownCommandLine;
 
-        if (NT_SUCCESS(PhGetProcessKnownType(
-            Process->QueryHandle,
-            &knownProcessType
-            )) && PhaGetProcessKnownCommandLine(
+        if (knownProcessType != UnknownProcessType && PhaGetProcessKnownCommandLine(
             Process->CommandLine,
             knownProcessType,
             &knownCommandLine
@@ -147,7 +151,7 @@ PPH_STRING PhGetProcessTooltipText(
             {
             case ServiceHostProcessType:
                 PhAppendStringBuilder2(&stringBuilder, L"Service group name:\n    ");
-                PhAppendStringBuilder(&stringBuilder, knownCommandLine.ServiceHost.GroupName);
+                PhAppendStringBuilder(&stringBuilder, &knownCommandLine.ServiceHost.GroupName->sr);
                 PhAppendCharStringBuilder(&stringBuilder, '\n');
                 break;
             case RunDllAsAppProcessType:
@@ -162,14 +166,14 @@ PPH_STRING PhGetProcessTooltipText(
                         tempString = PhFormatImageVersionInfo(
                             knownCommandLine.RunDllAsApp.FileName,
                             &versionInfo,
-                            L"    ",
+                            &StandardIndent,
                             0
                             );
 
                         if (!PhIsNullOrEmptyString(tempString))
                         {
                             PhAppendStringBuilder2(&stringBuilder, L"Run DLL target file:\n");
-                            PhAppendStringBuilder(&stringBuilder, tempString);
+                            PhAppendStringBuilder(&stringBuilder, &tempString->sr);
                             PhAppendCharStringBuilder(&stringBuilder, '\n');
                         }
 
@@ -189,15 +193,15 @@ PPH_STRING PhGetProcessTooltipText(
 
                     if (knownCommandLine.ComSurrogate.Name)
                     {
-                        PhAppendStringBuilder2(&stringBuilder, L"    ");
-                        PhAppendStringBuilder(&stringBuilder, knownCommandLine.ComSurrogate.Name);
+                        PhAppendStringBuilder(&stringBuilder, &StandardIndent);
+                        PhAppendStringBuilder(&stringBuilder, &knownCommandLine.ComSurrogate.Name->sr);
                         PhAppendCharStringBuilder(&stringBuilder, '\n');
                     }
 
                     if (guidString = PhFormatGuid(&knownCommandLine.ComSurrogate.Guid))
                     {
-                        PhAppendStringBuilder2(&stringBuilder, L"    ");
-                        PhAppendStringBuilder(&stringBuilder, guidString);
+                        PhAppendStringBuilder(&stringBuilder, &StandardIndent);
+                        PhAppendStringBuilder(&stringBuilder, &guidString->sr);
                         PhDereferenceObject(guidString);
                         PhAppendCharStringBuilder(&stringBuilder, '\n');
                     }
@@ -210,14 +214,14 @@ PPH_STRING PhGetProcessTooltipText(
                         tempString = PhFormatImageVersionInfo(
                             knownCommandLine.ComSurrogate.FileName,
                             &versionInfo,
-                            L"    ",
+                            &StandardIndent,
                             0
                             );
 
                         if (!PhIsNullOrEmptyString(tempString))
                         {
                             PhAppendStringBuilder2(&stringBuilder, L"COM target file:\n");
-                            PhAppendStringBuilder(&stringBuilder, tempString);
+                            PhAppendStringBuilder(&stringBuilder, &tempString->sr);
                             PhAppendCharStringBuilder(&stringBuilder, '\n');
                         }
 
@@ -268,10 +272,10 @@ PPH_STRING PhGetProcessTooltipText(
         {
             serviceItem = serviceList->Items[i];
 
-            PhAppendStringBuilder2(&stringBuilder, L"    ");
-            PhAppendStringBuilder(&stringBuilder, serviceItem->Name);
+            PhAppendStringBuilder(&stringBuilder, &StandardIndent);
+            PhAppendStringBuilder(&stringBuilder, &serviceItem->Name->sr);
             PhAppendStringBuilder2(&stringBuilder, L" (");
-            PhAppendStringBuilder(&stringBuilder, serviceItem->DisplayName);
+            PhAppendStringBuilder(&stringBuilder, &serviceItem->DisplayName->sr);
             PhAppendStringBuilder2(&stringBuilder, L")\n");
         }
 
@@ -279,26 +283,45 @@ PPH_STRING PhGetProcessTooltipText(
         PhDereferenceObject(serviceList);
     }
 
-    // Tasks
-    if (WindowsVersion >= WINDOWS_VISTA && (
-        PhEqualString2(Process->ProcessName, L"taskeng.exe", TRUE) ||
-        PhEqualString2(Process->ProcessName, L"taskhost.exe", TRUE) ||
-        PhEqualString2(Process->ProcessName, L"taskhostex.exe", TRUE)
-        ))
+    // Tasks, Drivers
+    switch (knownProcessType & KnownProcessTypeMask)
     {
-        PH_STRING_BUILDER tasks;
-
-        PhInitializeStringBuilder(&tasks, 40);
-
-        PhpFillRunningTasks(Process, &tasks);
-
-        if (tasks.String->Length != 0)
+    case TaskHostProcessType:
         {
-            PhAppendStringBuilder2(&stringBuilder, L"Tasks:\n");
-            PhAppendStringBuilder(&stringBuilder, tasks.String);
-        }
+            PH_STRING_BUILDER tasks;
 
-        PhDeleteStringBuilder(&tasks);
+            PhInitializeStringBuilder(&tasks, 40);
+
+            PhpFillRunningTasks(Process, &tasks);
+
+            if (tasks.String->Length != 0)
+            {
+                PhAppendStringBuilder2(&stringBuilder, L"Tasks:\n");
+                PhAppendStringBuilder(&stringBuilder, &tasks.String->sr);
+            }
+
+            PhDeleteStringBuilder(&tasks);
+        }
+        break;
+    case UmdfHostProcessType:
+        {
+            PH_STRING_BUILDER drivers;
+
+            PhInitializeStringBuilder(&drivers, 40);
+
+            PhpFillUmdfDrivers(Process, &drivers);
+
+            if (drivers.String->Length != 0)
+            {
+                PhAppendStringBuilder2(&stringBuilder, L"Drivers:\n");
+                PhAppendStringBuilder(&stringBuilder, &drivers.String->sr);
+            }
+
+            PhDeleteStringBuilder(&drivers);
+
+            validForMs = 10 * 1000; // 10 seconds
+        }
+        break;
     }
 
     // Plugin
@@ -308,8 +331,10 @@ PPH_STRING PhGetProcessTooltipText(
 
         getTooltipText.Parameter = Process;
         getTooltipText.StringBuilder = &stringBuilder;
+        getTooltipText.ValidForMs = validForMs;
 
         PhInvokeCallback(PhGetGeneralCallback(GeneralCallbackGetProcessTooltipText), &getTooltipText);
+        validForMs = getTooltipText.ValidForMs;
     }
 
     // Notes
@@ -375,7 +400,7 @@ PPH_STRING PhGetProcessTooltipText(
         if (Process->IsElevated)
             PhAppendStringBuilder2(&notes, L"    Process is elevated.\n");
         if (Process->IsImmersive)
-            PhAppendStringBuilder2(&notes, L"    Process is a Metro style app.\n");
+            PhAppendStringBuilder2(&notes, L"    Process is a Modern UI app.\n");
         if (Process->IsInJob)
             PhAppendStringBuilder2(&notes, L"    Process is in a job.\n");
         if (Process->IsPosix)
@@ -386,17 +411,140 @@ PPH_STRING PhGetProcessTooltipText(
         if (notes.String->Length != 0)
         {
             PhAppendStringBuilder2(&stringBuilder, L"Notes:\n");
-            PhAppendStringBuilder(&stringBuilder, notes.String);
+            PhAppendStringBuilder(&stringBuilder, &notes.String->sr);
         }
 
         PhDeleteStringBuilder(&notes);
     }
 
+    if (ValidToTickCount)
+        *ValidToTickCount = GetTickCount() + validForMs;
+
     // Remove the trailing newline.
     if (stringBuilder.String->Length != 0)
-        PhRemoveStringBuilder(&stringBuilder, stringBuilder.String->Length / 2 - 1, 1);
+        PhRemoveEndStringBuilder(&stringBuilder, 1);
 
     return PhFinalStringBuilderString(&stringBuilder);
+}
+
+VOID PhpFillUmdfDrivers(
+    _In_ PPH_PROCESS_ITEM Process,
+    _Inout_ PPH_STRING_BUILDER Drivers
+    )
+{
+    static PH_STRINGREF activeDevices = PH_STRINGREF_INIT(L"ACTIVE_DEVICES");
+    static PH_STRINGREF currentControlSetEnum = PH_STRINGREF_INIT(L"System\\CurrentControlSet\\Enum\\");
+
+    HANDLE processHandle;
+    ULONG flags = 0;
+    PVOID environment;
+    ULONG environmentLength;
+    ULONG enumerationKey;
+    PH_ENVIRONMENT_VARIABLE variable;
+
+    if (!NT_SUCCESS(PhOpenProcess(
+        &processHandle,
+        PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
+        Process->ProcessId
+        )))
+        return;
+
+#ifdef _WIN64
+    // Just in case.
+    if (Process->IsWow64)
+        flags |= PH_GET_PROCESS_ENVIRONMENT_WOW64;
+#endif
+
+    if (NT_SUCCESS(PhGetProcessEnvironment(
+        processHandle,
+        flags,
+        &environment,
+        &environmentLength
+        )))
+    {
+        enumerationKey = 0;
+
+        while (PhEnumProcessEnvironmentVariables(environment, environmentLength, &enumerationKey, &variable))
+        {
+            PH_STRINGREF part;
+            PH_STRINGREF remainingPart;
+
+            if (!PhEqualStringRef(&variable.Name, &activeDevices, TRUE))
+                continue;
+
+            remainingPart = variable.Value;
+
+            while (remainingPart.Length != 0)
+            {
+                PhSplitStringRefAtChar(&remainingPart, ';', &part, &remainingPart);
+
+                if (part.Length != 0)
+                {
+                    HANDLE driverKeyHandle;
+                    PPH_STRING driverKeyPath;
+
+                    driverKeyPath = PhConcatStringRef2(&currentControlSetEnum, &part);
+
+                    if (NT_SUCCESS(PhOpenKey(
+                        &driverKeyHandle,
+                        KEY_READ,
+                        PH_KEY_LOCAL_MACHINE,
+                        &driverKeyPath->sr,
+                        0
+                        )))
+                    {
+                        PPH_STRING deviceDesc;
+                        PH_STRINGREF deviceName;
+                        PPH_STRING hardwareId;
+
+                        if (deviceDesc = PhQueryRegistryString(driverKeyHandle, L"DeviceDesc"))
+                        {
+                            PH_STRINGREF firstPart;
+                            PH_STRINGREF secondPart;
+
+                            if (PhSplitStringRefAtLastChar(&deviceDesc->sr, ';', &firstPart, &secondPart))
+                                deviceName = secondPart;
+                            else
+                                deviceName = deviceDesc->sr;
+                        }
+                        else
+                        {
+                            PhInitializeStringRef(&deviceName, L"Unknown Device");
+                        }
+
+                        hardwareId = PhQueryRegistryString(driverKeyHandle, L"HardwareID");
+
+                        PhAppendStringBuilder(Drivers, &StandardIndent);
+                        PhAppendStringBuilder(Drivers, &deviceName);
+
+                        if (hardwareId)
+                        {
+                            PhTrimToNullTerminatorString(hardwareId);
+
+                            if (hardwareId->Length != 0)
+                            {
+                                PhAppendStringBuilder2(Drivers, L" (");
+                                PhAppendStringBuilder(Drivers, &hardwareId->sr);
+                                PhAppendCharStringBuilder(Drivers, ')');
+                            }
+                        }
+
+                        PhAppendCharStringBuilder(Drivers, '\n');
+
+                        PhClearReference(&hardwareId);
+                        PhClearReference(&deviceDesc);
+                        NtClose(driverKeyHandle);
+                    }
+
+                    PhDereferenceObject(driverKeyPath);
+                }
+            }
+        }
+
+        PhFreePage(environment);
+    }
+
+    NtClose(processHandle);
 }
 
 VOID PhpFillRunningTasks(
@@ -451,13 +599,13 @@ VOID PhpFillRunningTasks(
 
                             if (
                                 SUCCEEDED(IRunningTask_get_EnginePID(runningTask, &pid)) &&
-                                pid == (ULONG)Process->ProcessId
+                                pid == HandleToUlong(Process->ProcessId)
                                 )
                             {
                                 IRunningTask_get_CurrentAction(runningTask, &action);
                                 IRunningTask_get_Path(runningTask, &path);
 
-                                PhAppendStringBuilder2(Tasks, L"    ");
+                                PhAppendStringBuilder(Tasks, &StandardIndent);
                                 PhAppendStringBuilder2(Tasks, action ? action : L"Unknown Action");
                                 PhAppendStringBuilder2(Tasks, L" (");
                                 PhAppendStringBuilder2(Tasks, path ? path : L"Unknown Path");
@@ -487,65 +635,56 @@ PPH_STRING PhGetServiceTooltipText(
     )
 {
     PH_STRING_BUILDER stringBuilder;
-    PPH_STRING tempString;
     SC_HANDLE serviceHandle;
 
     PhInitializeStringBuilder(&stringBuilder, 200);
 
     if (serviceHandle = PhOpenService(Service->Name->Buffer, SERVICE_QUERY_CONFIG))
     {
-        //LPQUERY_SERVICE_CONFIG config;
+        PPH_STRING fileName;
+        PPH_STRING description;
 
         // File information
-        // (Disabled for now because of file name resolution issues)
 
-        /*if (config = PhGetServiceConfig(serviceHandle))
+        if (fileName = PhGetServiceRelevantFileName(&Service->Name->sr, serviceHandle))
         {
-            PPH_STRING fileName;
-            PPH_STRING newFileName;
             PH_IMAGE_VERSION_INFO versionInfo;
-
-            fileName = PhCreateString(config->lpBinaryPathName);
-            newFileName = PhGetFileName(fileName);
-            PhDereferenceObject(fileName);
-            fileName = newFileName;
+            PPH_STRING versionInfoText;
 
             if (PhInitializeImageVersionInfo(
                 &versionInfo,
                 fileName->Buffer
                 ))
             {
-                tempString = PhFormatImageVersionInfo(
+                versionInfoText = PhFormatImageVersionInfo(
                     fileName,
                     &versionInfo,
-                    L"    ",
+                    &StandardIndent,
                     0
                     );
 
-                if (!PhIsNullOrEmptyString(tempString))
+                if (!PhIsNullOrEmptyString(versionInfoText))
                 {
                     PhAppendStringBuilder2(&stringBuilder, L"File:\n");
-                    PhAppendStringBuilder(&stringBuilder, tempString);
+                    PhAppendStringBuilder(&stringBuilder, &versionInfoText->sr);
                     PhAppendCharStringBuilder(&stringBuilder, '\n');
                 }
 
-                if (tempString)
-                    PhDereferenceObject(tempString);
-
+                PhClearReference(&versionInfoText);
                 PhDeleteImageVersionInfo(&versionInfo);
             }
 
             PhDereferenceObject(fileName);
-            PhFree(config);
-        }*/
+        }
 
         // Description
 
-        if (tempString = PhGetServiceDescription(serviceHandle))
+        if (description = PhGetServiceDescription(serviceHandle))
         {
-            PhAppendStringBuilder(&stringBuilder, tempString);
+            PhAppendStringBuilder2(&stringBuilder, L"Description:\n    ");
+            PhAppendStringBuilder(&stringBuilder, &description->sr);
             PhAppendCharStringBuilder(&stringBuilder, '\n');
-            PhDereferenceObject(tempString);
+            PhDereferenceObject(description);
         }
 
         CloseServiceHandle(serviceHandle);
@@ -553,7 +692,7 @@ PPH_STRING PhGetServiceTooltipText(
 
     // Remove the trailing newline.
     if (stringBuilder.String->Length != 0)
-        PhRemoveStringBuilder(&stringBuilder, stringBuilder.String->Length / 2 - 1, 1);
+        PhRemoveEndStringBuilder(&stringBuilder, 1);
 
     return PhFinalStringBuilderString(&stringBuilder);
 }

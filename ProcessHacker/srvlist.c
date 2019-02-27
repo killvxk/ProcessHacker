@@ -2,7 +2,7 @@
  * Process Hacker -
  *   service list
  *
- * Copyright (C) 2010-2012 wj32
+ * Copyright (C) 2010-2015 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -101,11 +101,7 @@ ULONG PhpServiceNodeHashtableHashFunction(
     _In_ PVOID Entry
     )
 {
-#ifdef _M_IX86
-    return PhHashInt32((ULONG)(*(PPH_SERVICE_NODE *)Entry)->ServiceItem);
-#else
-    return PhHashInt64((ULONG64)(*(PPH_SERVICE_NODE *)Entry)->ServiceItem);
-#endif
+    return PhHashIntPtr((ULONG_PTR)(*(PPH_SERVICE_NODE *)Entry)->ServiceItem);
 }
 
 VOID PhInitializeServiceTreeList(
@@ -126,11 +122,11 @@ VOID PhInitializeServiceTreeList(
     TreeNew_SetRedraw(hwnd, FALSE);
 
     // Default columns
-    PhAddTreeNewColumn(hwnd, PHSVTLC_NAME, TRUE, L"Name", 100, PH_ALIGN_LEFT, 0, 0);
-    PhAddTreeNewColumn(hwnd, PHSVTLC_DISPLAYNAME, TRUE, L"Display Name", 180, PH_ALIGN_LEFT, 1, 0);
-    PhAddTreeNewColumn(hwnd, PHSVTLC_TYPE, TRUE, L"Type", 110, PH_ALIGN_LEFT, 2, 0);
+    PhAddTreeNewColumn(hwnd, PHSVTLC_NAME, TRUE, L"Name", 140, PH_ALIGN_LEFT, 0, 0);
+    PhAddTreeNewColumn(hwnd, PHSVTLC_DISPLAYNAME, TRUE, L"Display Name", 220, PH_ALIGN_LEFT, 1, 0);
+    PhAddTreeNewColumn(hwnd, PHSVTLC_TYPE, TRUE, L"Type", 100, PH_ALIGN_LEFT, 2, 0);
     PhAddTreeNewColumn(hwnd, PHSVTLC_STATUS, TRUE, L"Status", 70, PH_ALIGN_LEFT, 3, 0);
-    PhAddTreeNewColumn(hwnd, PHSVTLC_STARTTYPE, TRUE, L"Start Type", 100, PH_ALIGN_LEFT, 4, 0);
+    PhAddTreeNewColumn(hwnd, PHSVTLC_STARTTYPE, TRUE, L"Start Type", 130, PH_ALIGN_LEFT, 4, 0);
     PhAddTreeNewColumn(hwnd, PHSVTLC_PID, TRUE, L"PID", 50, PH_ALIGN_RIGHT, 5, DT_RIGHT);
 
     PhAddTreeNewColumn(hwnd, PHSVTLC_BINARYPATH, FALSE, L"Binary Path", 180, PH_ALIGN_LEFT, -1, DT_PATH_ELLIPSIS);
@@ -310,7 +306,7 @@ VOID PhUpdateServiceNode(
     )
 {
     memset(ServiceNode->TextCache, 0, sizeof(PH_STRINGREF) * PHSVTLC_MAXIMUM);
-    PhSwapReference(&ServiceNode->TooltipText, NULL);
+    PhClearReference(&ServiceNode->TooltipText);
 
     ServiceNode->ValidMask = 0;
     PhInvalidateTreeNewNode(&ServiceNode->Node, TN_CACHE_ICON);
@@ -345,9 +341,9 @@ static VOID PhpUpdateServiceNodeConfig(
             if (serviceConfig = PhGetServiceConfig(serviceHandle))
             {
                 if (serviceConfig->lpBinaryPathName)
-                    PhSwapReference2(&ServiceNode->BinaryPath, PhCreateString(serviceConfig->lpBinaryPathName));
+                    PhMoveReference(&ServiceNode->BinaryPath, PhCreateString(serviceConfig->lpBinaryPathName));
                 if (serviceConfig->lpLoadOrderGroup)
-                    PhSwapReference2(&ServiceNode->LoadOrderGroup, PhCreateString(serviceConfig->lpLoadOrderGroup));
+                    PhMoveReference(&ServiceNode->LoadOrderGroup, PhCreateString(serviceConfig->lpLoadOrderGroup));
 
                 PhFree(serviceConfig);
             }
@@ -369,7 +365,7 @@ static VOID PhpUpdateServiceNodeDescription(
 
         if (serviceHandle = PhOpenService(ServiceNode->ServiceItem->Name->Buffer, SERVICE_QUERY_CONFIG))
         {
-            PhSwapReference2(&ServiceNode->Description, PhGetServiceDescription(serviceHandle));
+            PhMoveReference(&ServiceNode->Description, PhGetServiceDescription(serviceHandle));
 
             CloseServiceHandle(serviceHandle);
         }
@@ -435,6 +431,11 @@ END_SORT_FUNCTION
 BEGIN_SORT_FUNCTION(StartType)
 {
     sortResult = intcmp(serviceItem1->StartType, serviceItem2->StartType);
+
+    if (sortResult == 0)
+        sortResult = intcmp(serviceItem1->DelayedStart, serviceItem2->DelayedStart);
+    if (sortResult == 0)
+        sortResult = intcmp(serviceItem1->HasTriggers, serviceItem2->HasTriggers);
 }
 END_SORT_FUNCTION
 
@@ -558,23 +559,46 @@ BOOLEAN NTAPI PhpServiceTreeNewCallback(
                 getCellText->Text = serviceItem->DisplayName->sr;
                 break;
             case PHSVTLC_TYPE:
-                PhInitializeStringRef(&getCellText->Text, PhGetServiceTypeString(serviceItem->Type));
+                PhInitializeStringRefLongHint(&getCellText->Text, PhGetServiceTypeString(serviceItem->Type));
                 break;
             case PHSVTLC_STATUS:
-                PhInitializeStringRef(&getCellText->Text, PhGetServiceStateString(serviceItem->State));
+                PhInitializeStringRefLongHint(&getCellText->Text, PhGetServiceStateString(serviceItem->State));
                 break;
             case PHSVTLC_STARTTYPE:
-                PhInitializeStringRef(&getCellText->Text, PhGetServiceStartTypeString(serviceItem->StartType));
+                {
+                    PH_FORMAT format[2];
+                    PWSTR additional = NULL;
+                    SIZE_T returnLength;
+
+                    PhInitFormatS(&format[0], PhGetServiceStartTypeString(serviceItem->StartType));
+
+                    if (serviceItem->DelayedStart && serviceItem->HasTriggers)
+                        additional = L" (Delayed, Trigger)";
+                    else if (serviceItem->DelayedStart)
+                        additional = L" (Delayed)";
+                    else if (serviceItem->HasTriggers)
+                        additional = L" (Trigger)";
+
+                    if (additional)
+                        PhInitFormatS(&format[1], additional);
+
+                    if (PhFormatToBuffer(format, 1 + (additional ? 1 : 0), node->StartTypeText,
+                        sizeof(node->StartTypeText), &returnLength))
+                    {
+                        getCellText->Text.Buffer = node->StartTypeText;
+                        getCellText->Text.Length = returnLength - sizeof(WCHAR); // minus null terminator
+                    }
+                }
                 break;
             case PHSVTLC_PID:
-                PhInitializeStringRef(&getCellText->Text, serviceItem->ProcessIdString);
+                PhInitializeStringRefLongHint(&getCellText->Text, serviceItem->ProcessIdString);
                 break;
             case PHSVTLC_BINARYPATH:
                 PhpUpdateServiceNodeConfig(node);
                 getCellText->Text = PhGetStringRef(node->BinaryPath);
                 break;
             case PHSVTLC_ERRORCONTROL:
-                PhInitializeStringRef(&getCellText->Text, PhGetServiceErrorControlString(serviceItem->ErrorControl));
+                PhInitializeStringRefLongHint(&getCellText->Text, PhGetServiceErrorControlString(serviceItem->ErrorControl));
                 break;
             case PHSVTLC_GROUP:
                 PhpUpdateServiceNodeConfig(node);
@@ -664,7 +688,10 @@ BOOLEAN NTAPI PhpServiceTreeNewCallback(
                 SendMessage(PhMainWndHandle, WM_COMMAND, ID_SERVICE_DELETE, 0);
                 break;
             case VK_RETURN:
-                SendMessage(PhMainWndHandle, WM_COMMAND, ID_SERVICE_PROPERTIES, 0);
+                if (GetKeyState(VK_CONTROL) >= 0)
+                    SendMessage(PhMainWndHandle, WM_COMMAND, ID_SERVICE_PROPERTIES, 0);
+                else
+                    SendMessage(PhMainWndHandle, WM_COMMAND, ID_SERVICE_OPENFILELOCATION, 0);
                 break;
             }
         }
@@ -679,7 +706,7 @@ BOOLEAN NTAPI PhpServiceTreeNewCallback(
             data.DefaultSortOrder = AscendingSortOrder;
             PhInitializeTreeNewColumnMenu(&data);
 
-            data.Selection = PhShowEMenu(data.Menu, hwnd, PH_EMENU_SHOW_LEFTRIGHT | PH_EMENU_SHOW_NONOTIFY,
+            data.Selection = PhShowEMenu(data.Menu, hwnd, PH_EMENU_SHOW_LEFTRIGHT,
                 PH_ALIGN_LEFT | PH_ALIGN_TOP, data.MouseEvent->ScreenLocation.x, data.MouseEvent->ScreenLocation.y);
             PhHandleTreeNewColumnMenu(&data);
             PhDeleteTreeNewColumnMenu(&data);
@@ -797,9 +824,9 @@ VOID PhWriteServiceList(
         PPH_STRING line;
 
         line = lines->Items[i];
-        PhWriteStringAsAnsiFileStream(FileStream, &line->sr);
+        PhWriteStringAsUtf8FileStream(FileStream, &line->sr);
         PhDereferenceObject(line);
-        PhWriteStringAsAnsiFileStream2(FileStream, L"\r\n");
+        PhWriteStringAsUtf8FileStream2(FileStream, L"\r\n");
     }
 
     PhDereferenceObject(lines);

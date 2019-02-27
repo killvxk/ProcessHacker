@@ -21,6 +21,7 @@
  */
 
 #include <phapp.h>
+#include <secedit.h>
 #include <settings.h>
 #include <extmgri.h>
 #include <phplug.h>
@@ -62,7 +63,6 @@ BOOLEAN NTAPI PhpHandleTreeNewCallback(
 VOID PhInitializeHandleList(
     _In_ HWND ParentWindowHandle,
     _In_ HWND TreeNewHandle,
-    _In_ PPH_PROCESS_ITEM ProcessItem,
     _Out_ PPH_HANDLE_LIST_CONTEXT Context
     )
 {
@@ -137,7 +137,7 @@ ULONG PhpHandleNodeHashtableHashFunction(
     _In_ PVOID Entry
     )
 {
-    return (ULONG)(*(PPH_HANDLE_NODE *)Entry)->Handle / 4;
+    return HandleToUlong((*(PPH_HANDLE_NODE *)Entry)->Handle) / 4;
 }
 
 VOID PhLoadSettingsHandleList(
@@ -196,6 +196,9 @@ VOID PhSetOptionsHandleList(
             {
                 node->Node.Visible = visible;
                 modified = TRUE;
+
+                if (!visible)
+                    node->Node.Selected = FALSE;
             }
         }
 
@@ -523,10 +526,10 @@ BOOLEAN NTAPI PhpHandleTreeNewCallback(
                 getCellText->Text = PhGetStringRef(handleItem->BestObjectName);
                 break;
             case PHHNTLC_HANDLE:
-                PhInitializeStringRef(&getCellText->Text, handleItem->HandleString);
+                PhInitializeStringRefLongHint(&getCellText->Text, handleItem->HandleString);
                 break;
             case PHHNTLC_OBJECTADDRESS:
-                PhInitializeStringRef(&getCellText->Text, handleItem->ObjectString);
+                PhInitializeStringRefLongHint(&getCellText->Text, handleItem->ObjectString);
                 break;
             case PHHNTLC_ATTRIBUTES:
                 switch (handleItem->Attributes & (OBJ_PROTECT_CLOSE | OBJ_INHERIT))
@@ -543,7 +546,7 @@ BOOLEAN NTAPI PhpHandleTreeNewCallback(
                 }
                 break;
             case PHHNTLC_GRANTEDACCESS:
-                PhInitializeStringRef(&getCellText->Text, handleItem->GrantedAccessString);
+                PhInitializeStringRefLongHint(&getCellText->Text, handleItem->GrantedAccessString);
                 break;
             case PHHNTLC_GRANTEDACCESSSYMBOLIC:
                 if (handleItem->GrantedAccess != 0)
@@ -567,7 +570,7 @@ BOOLEAN NTAPI PhpHandleTreeNewCallback(
                     if (node->GrantedAccessSymbolicText->Length != 0)
                         getCellText->Text = node->GrantedAccessSymbolicText->sr;
                     else
-                        PhInitializeStringRef(&getCellText->Text, handleItem->GrantedAccessString);
+                        PhInitializeStringRefLongHint(&getCellText->Text, handleItem->GrantedAccessString);
                 }
                 break;
             case PHHNTLC_ORIGINALNAME:
@@ -660,7 +663,7 @@ BOOLEAN NTAPI PhpHandleTreeNewCallback(
             data.DefaultSortOrder = AscendingSortOrder;
             PhInitializeTreeNewColumnMenu(&data);
 
-            data.Selection = PhShowEMenu(data.Menu, hwnd, PH_EMENU_SHOW_LEFTRIGHT | PH_EMENU_SHOW_NONOTIFY,
+            data.Selection = PhShowEMenu(data.Menu, hwnd, PH_EMENU_SHOW_LEFTRIGHT,
                 PH_ALIGN_LEFT | PH_ALIGN_TOP, data.MouseEvent->ScreenLocation.x, data.MouseEvent->ScreenLocation.y);
             PhHandleTreeNewColumnMenu(&data);
             PhDeleteTreeNewColumnMenu(&data);

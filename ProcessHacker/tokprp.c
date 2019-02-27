@@ -21,6 +21,7 @@
  */
 
 #include <phapp.h>
+#include <secedit.h>
 #include <emenu.h>
 #include <cpysave.h>
 
@@ -137,7 +138,7 @@ VOID PhShowTokenProperties(
 
     pages[0] = PhCreateTokenPage(OpenObject, Context, NULL);
 
-    PropertySheet(&propSheetHeader);
+    PhModalPropertySheet(&propSheetHeader);
 }
 
 HPROPSHEETPAGE PhCreateTokenPage(
@@ -150,9 +151,7 @@ HPROPSHEETPAGE PhCreateTokenPage(
     PROPSHEETPAGE propSheetPage;
     PTOKEN_PAGE_CONTEXT tokenPageContext;
 
-    if (!NT_SUCCESS(PhCreateAlloc(&tokenPageContext, sizeof(TOKEN_PAGE_CONTEXT))))
-        return NULL;
-
+    tokenPageContext = PhCreateAlloc(sizeof(TOKEN_PAGE_CONTEXT));
     memset(tokenPageContext, 0, sizeof(TOKEN_PAGE_CONTEXT));
     tokenPageContext->OpenObject = OpenObject;
     tokenPageContext->Context = Context;
@@ -253,13 +252,13 @@ COLORREF PhGetGroupAttributesColor(
         if (Attributes & SE_GROUP_INTEGRITY_ENABLED)
             return RGB(0xe0, 0xf0, 0xe0);
         else
-            return PhSysWindowColor;
+            return GetSysColor(COLOR_WINDOW);
     }
 
     if (Attributes & SE_GROUP_ENABLED_BY_DEFAULT)
         return RGB(0xe0, 0xf0, 0xe0);
     else if (Attributes & SE_GROUP_ENABLED)
-        return PhSysWindowColor;
+        return GetSysColor(COLOR_WINDOW);
     else
         return RGB(0xf0, 0xe0, 0xe0);
 }
@@ -323,44 +322,6 @@ PWSTR PhGetElevationTypeString(
     default:
         return L"N/A";
     }
-}
-
-PWSTR PhGetBuiltinCapabilityString(
-    _In_ PSID CapabilitySid
-    )
-{
-    static SID_IDENTIFIER_AUTHORITY appPackageAuthority = SECURITY_APP_PACKAGE_AUTHORITY;
-
-    if (memcmp(RtlIdentifierAuthoritySid(CapabilitySid), &appPackageAuthority, sizeof(SID_IDENTIFIER_AUTHORITY)) == 0 &&
-        *RtlSubAuthorityCountSid(CapabilitySid) == SECURITY_BUILTIN_CAPABILITY_RID_COUNT &&
-        *RtlSubAuthoritySid(CapabilitySid, 0) == SECURITY_CAPABILITY_BASE_RID)
-    {
-        switch (*RtlSubAuthoritySid(CapabilitySid, 1))
-        {
-        case SECURITY_CAPABILITY_INTERNET_CLIENT:
-            return L"Internet Client";
-        case SECURITY_CAPABILITY_INTERNET_CLIENT_SERVER:
-            return L"Internet Client Server";
-        case SECURITY_CAPABILITY_PRIVATE_NETWORK_CLIENT_SERVER:
-            return L"Private Network Client Server";
-        case SECURITY_CAPABILITY_PICTURES_LIBRARY:
-            return L"Pictures Library";
-        case SECURITY_CAPABILITY_VIDEOS_LIBRARY:
-            return L"Videos Library";
-        case SECURITY_CAPABILITY_MUSIC_LIBRARY:
-            return L"Music Library";
-        case SECURITY_CAPABILITY_DOCUMENTS_LIBRARY:
-            return L"Documents Library";
-        case SECURITY_CAPABILITY_ENTERPRISE_AUTHENTICATION:
-            return L"Default Windows Credentials";
-        case SECURITY_CAPABILITY_SHARED_USER_CERTIFICATES:
-            return L"Shared User Certificates";
-        case SECURITY_CAPABILITY_REMOVABLE_STORAGE:
-            return L"Removable Storage";
-        }
-    }
-
-    return NULL;
 }
 
 BOOLEAN PhpUpdateTokenGroups(
@@ -670,7 +631,7 @@ INT_PTR CALLBACK PhpTokenPageProc(
                             ULONG newAttributes;
 
                             PhLookupPrivilegeName(&privileges[i]->Luid, &privilegeName);
-                            PHA_DEREFERENCE(privilegeName);
+                            PhAutoDereferenceObject(privilegeName);
 
                             switch (LOWORD(wParam))
                             {
@@ -846,7 +807,7 @@ INT_PTR CALLBACK PhpTokenPageProc(
                     selectedItem = PhShowEMenu(
                         menu,
                         hwndDlg,
-                        PH_EMENU_SHOW_NONOTIFY | PH_EMENU_SHOW_LEFTRIGHT,
+                        PH_EMENU_SHOW_LEFTRIGHT,
                         PH_ALIGN_LEFT | PH_ALIGN_TOP,
                         rect.left,
                         rect.bottom
@@ -941,19 +902,13 @@ INT_PTR CALLBACK PhpTokenPageProc(
 
                 if (ListView_GetSelectedCount(tokenPageContext->PrivilegesListViewHandle) != 0)
                 {
-                    HMENU menu;
-                    HMENU subMenu;
+                    PPH_EMENU menu;
 
-                    menu = LoadMenu(PhInstanceHandle, MAKEINTRESOURCE(IDR_PRIVILEGE));
-                    subMenu = GetSubMenu(menu, 0);
-
-                    PhShowContextMenu(
-                        hwndDlg,
-                        tokenPageContext->PrivilegesListViewHandle,
-                        subMenu,
-                        point
-                        );
-                    DestroyMenu(menu);
+                    menu = PhCreateEMenu();
+                    PhLoadResourceEMenuItem(menu, PhInstanceHandle, MAKEINTRESOURCE(IDR_PRIVILEGE), 0);
+                    PhShowEMenu(menu, hwndDlg, PH_EMENU_SHOW_SEND_COMMAND | PH_EMENU_SHOW_LEFTRIGHT,
+                        PH_ALIGN_LEFT | PH_ALIGN_TOP, point.x, point.y);
+                    PhDestroyEMenu(menu);
                 }
             }
         }
@@ -1062,7 +1017,7 @@ VOID PhpShowTokenAdvancedProperties(
     }
 
     propSheetHeader.nPages = numberOfPages;
-    PropertySheet(&propSheetHeader);
+    PhModalPropertySheet(&propSheetHeader);
 }
 
 static NTSTATUS PhpOpenLinkedToken(
@@ -1119,21 +1074,21 @@ INT_PTR CALLBACK PhpTokenGeneralPageProc(
 
                 if (NT_SUCCESS(PhGetTokenUser(tokenHandle, &tokenUser)))
                 {
-                    tokenUserName = PHA_DEREFERENCE(PhGetSidFullName(tokenUser->User.Sid, TRUE, NULL));
-                    tokenUserSid = PHA_DEREFERENCE(PhSidToStringSid(tokenUser->User.Sid));
+                    tokenUserName = PhAutoDereferenceObject(PhGetSidFullName(tokenUser->User.Sid, TRUE, NULL));
+                    tokenUserSid = PhAutoDereferenceObject(PhSidToStringSid(tokenUser->User.Sid));
 
                     PhFree(tokenUser);
                 }
 
                 if (NT_SUCCESS(PhGetTokenOwner(tokenHandle, &tokenOwner)))
                 {
-                    tokenOwnerName = PHA_DEREFERENCE(PhGetSidFullName(tokenOwner->Owner, TRUE, NULL));
+                    tokenOwnerName = PhAutoDereferenceObject(PhGetSidFullName(tokenOwner->Owner, TRUE, NULL));
                     PhFree(tokenOwner);
                 }
 
                 if (NT_SUCCESS(PhGetTokenPrimaryGroup(tokenHandle, &tokenPrimaryGroup)))
                 {
-                    tokenPrimaryGroupName = PHA_DEREFERENCE(PhGetSidFullName(
+                    tokenPrimaryGroupName = PhAutoDereferenceObject(PhGetSidFullName(
                         tokenPrimaryGroup->PrimaryGroup, TRUE, NULL));
                     PhFree(tokenPrimaryGroup);
                 }
@@ -1177,7 +1132,7 @@ INT_PTR CALLBACK PhpTokenGeneralPageProc(
 
                 if (NT_SUCCESS(PhGetTokenSource(tokenHandle, &tokenSource)))
                 {
-                    PhCopyUnicodeStringZFromAnsi(
+                    PhCopyStringZFromBytes(
                         tokenSource.SourceName,
                         TOKEN_SOURCE_LENGTH,
                         tokenSourceName,
@@ -1185,7 +1140,7 @@ INT_PTR CALLBACK PhpTokenGeneralPageProc(
                         NULL
                         );
 
-                    PhPrintPointer(tokenSourceLuid, (PVOID)tokenSource.SourceIdentifier.LowPart);
+                    PhPrintPointer(tokenSourceLuid, UlongToPtr(tokenSource.SourceIdentifier.LowPart));
                 }
 
                 NtClose(tokenHandle);
@@ -1311,8 +1266,8 @@ INT_PTR CALLBACK PhpTokenAdvancedPageProc(
                         tokenImpersonationLevel = L"N/A";
                     }
 
-                    PhPrintPointer(tokenLuid, (PVOID)statistics.TokenId.LowPart);
-                    PhPrintPointer(authenticationLuid, (PVOID)statistics.AuthenticationId.LowPart);
+                    PhPrintPointer(tokenLuid, UlongToPtr(statistics.TokenId.LowPart));
+                    PhPrintPointer(authenticationLuid, UlongToPtr(statistics.AuthenticationId.LowPart));
 
                     // DynamicCharged contains the number of bytes allocated.
                     // DynamicAvailable contains the number of bytes free.
@@ -1389,31 +1344,24 @@ INT_PTR CALLBACK PhpTokenCapabilitiesPageProc(
                     for (i = 0; i < tokenPageContext->Capabilities->GroupCount; i++)
                     {
                         INT lvItemIndex;
-                        PWSTR name;
-                        PPH_STRING sidString;
+                        PPH_STRING name;
                         PPH_STRING attributesString;
 
-                        name = PhGetBuiltinCapabilityString(tokenPageContext->Capabilities->Groups[i].Sid);
-                        sidString = NULL;
+                        name = PhGetSidFullName(tokenPageContext->Capabilities->Groups[i].Sid, TRUE, NULL);
 
                         if (!name)
-                        {
-                            sidString = PhSidToStringSid(tokenPageContext->Capabilities->Groups[i].Sid);
-                            name = PhGetString(sidString);
-                        }
+                            name = PhSidToStringSid(tokenPageContext->Capabilities->Groups[i].Sid);
 
                         if (name)
                         {
-                            lvItemIndex = PhAddListViewItem(lvHandle, MAXINT, name,
+                            lvItemIndex = PhAddListViewItem(lvHandle, MAXINT, name->Buffer,
                                 &tokenPageContext->Capabilities->Groups[i]);
                             attributesString = PhGetGroupAttributesString(
                                 tokenPageContext->Capabilities->Groups[i].Attributes);
                             PhSetListViewSubItem(lvHandle, lvItemIndex, 1, attributesString->Buffer);
 
                             PhDereferenceObject(attributesString);
-
-                            if (sidString)
-                                PhDereferenceObject(sidString);
+                            PhDereferenceObject(name);
                         }
                     }
 
@@ -1547,7 +1495,7 @@ PATTRIBUTE_NODE PhpAddAttributeNode(
     else
         PhAddItemList(Context->RootList, node);
 
-    PhSwapReference2(&node->Text, Text);
+    PhMoveReference(&node->Text, Text);
 
     return node;
 }
@@ -1557,7 +1505,7 @@ VOID PhpDestroyAttributeNode(
     )
 {
     PhDereferenceObject(Node->Children);
-    PhSwapReference(&Node->Text, NULL);
+    PhClearReference(&Node->Text);
     PhFree(Node);
 }
 
@@ -1643,7 +1591,7 @@ PPH_STRING PhGetSecurityAttributeFlagsString(
         PhAppendStringBuilder2(&sb, L"Non-inheritable, ");
 
     if (sb.String->Length != 0)
-        PhRemoveStringBuilder(&sb, sb.String->Length / 2 - 2, 2);
+        PhRemoveEndStringBuilder(&sb, 2);
     else
         PhAppendStringBuilder2(&sb, L"(None)");
 
@@ -1714,7 +1662,7 @@ PPH_STRING PhFormatTokenSecurityAttributeValue(
         PhInitFormatI64U(&format, Attribute->Values.pUint64[ValueIndex]);
         return PhFormat(&format, 1, 0);
     case TOKEN_SECURITY_ATTRIBUTE_TYPE_STRING:
-        return PhCreateStringEx(Attribute->Values.pString[ValueIndex].Buffer, Attribute->Values.pString[ValueIndex].Length);
+        return PhCreateStringFromUnicodeString(&Attribute->Values.pString[ValueIndex]);
     case TOKEN_SECURITY_ATTRIBUTE_TYPE_FQBN:
         return PhFormatString(L"Version %I64u: %.*s",
             Attribute->Values.pFqbn[ValueIndex].Version,
@@ -1884,7 +1832,7 @@ BOOLEAN PhpAddTokenAttributes(
 
             // Attribute
             node = PhpAddAttributeNode(&TokenPageContext->AuthzTreeContext, NULL,
-                PhCreateStringEx(attribute->Name.Buffer, attribute->Name.Length));
+                PhCreateStringFromUnicodeString(&attribute->Name));
             // Type
             PhpAddAttributeNode(&TokenPageContext->AuthzTreeContext, node,
                 PhFormatString(L"Type: %s", PhGetSecurityAttributeTypeString(attribute->ValueType)));

@@ -65,6 +65,7 @@ NTSTATUS NetworkTracertThreadStart(
 
     if (CreatePipe(&context->PipeReadHandle, &pipeWriteHandle, NULL, 0))
     {
+        HANDLE threadHandle = NULL;
         STARTUPINFO startupInfo = { sizeof(startupInfo) };
         OBJECT_HANDLE_FLAG_INFORMATION flagInfo;
         PPH_STRING command = NULL;
@@ -75,22 +76,50 @@ NTSTATUS NetworkTracertThreadStart(
         startupInfo.hStdError = pipeWriteHandle;
         startupInfo.wShowWindow = SW_HIDE;
 
-        if (PhGetIntegerSetting(L"EnableNetworkResolve"))
+        switch (context->Action)
         {
-            command = PhFormatString(
-                L"%s\\system32\\tracert.exe %s",
-                USER_SHARED_DATA->NtSystemRoot,
-                context->addressString
-                );
-        }
-        else
-        {
-            // Disable hostname lookup.
-            command = PhFormatString(
-                L"%s\\system32\\tracert.exe -d %s",
-                USER_SHARED_DATA->NtSystemRoot,
-                context->addressString
-                );
+        case NETWORK_ACTION_TRACEROUTE:
+            {
+                if (PhGetIntegerSetting(L"EnableNetworkResolve"))
+                {
+                    command = PhFormatString(
+                        L"%s\\system32\\tracert.exe %s",
+                        USER_SHARED_DATA->NtSystemRoot,
+                        context->IpAddressString
+                        );
+                }
+                else
+                {
+                    // Disable hostname lookup.
+                    command = PhFormatString(
+                        L"%s\\system32\\tracert.exe -d %s",
+                        USER_SHARED_DATA->NtSystemRoot,
+                        context->IpAddressString
+                        );
+                }
+            }
+            break;
+        case NETWORK_ACTION_PATHPING:
+            {
+                if (PhGetIntegerSetting(L"EnableNetworkResolve"))
+                {
+                    command = PhFormatString(
+                        L"%s\\system32\\pathping.exe %s",
+                        USER_SHARED_DATA->NtSystemRoot,
+                        context->IpAddressString
+                        );
+                }
+                else
+                {
+                    // Disable hostname lookup.
+                    command = PhFormatString(
+                        L"%s\\system32\\pathping.exe -n %s",
+                        USER_SHARED_DATA->NtSystemRoot,
+                        context->IpAddressString
+                        );
+                }
+            }
+            break;
         }
 
         // Allow the write handle to be inherited.
@@ -121,7 +150,8 @@ NTSTATUS NetworkTracertThreadStart(
         NtClose(pipeWriteHandle);
 
         // Create a thread which will wait for output and display it.
-        context->ThreadHandle = PhCreateThread(0, (PUSER_THREAD_START_ROUTINE)StdOutNetworkTracertThreadStart, context);
+        if (threadHandle = PhCreateThread(0, StdOutNetworkTracertThreadStart, context))
+            NtClose(threadHandle);
     }
 
     return STATUS_SUCCESS;

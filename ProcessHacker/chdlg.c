@@ -190,8 +190,6 @@ INT_PTR CALLBACK PhpChoiceDlgProc(
                 context->SavedChoicesSettingName = NULL; // make sure we don't try to save the choices
             }
 
-            SetFocus(comboBoxHandle);
-
             if (type == PH_CHOICE_DIALOG_PASSWORD)
             {
                 if (*context->SelectedChoice)
@@ -262,7 +260,7 @@ INT_PTR CALLBACK PhpChoiceDlgProc(
                     SWP_NOACTIVATE | SWP_NOZORDER);
             }
 
-            SetFocus(comboBoxHandle);
+            SendMessage(hwndDlg, WM_NEXTDLGCTL, (WPARAM)comboBoxHandle, TRUE);
         }
         break;
     case WM_DESTROY:
@@ -284,7 +282,7 @@ INT_PTR CALLBACK PhpChoiceDlgProc(
 
                     if ((context->Flags & PH_CHOICE_DIALOG_TYPE_MASK) != PH_CHOICE_DIALOG_PASSWORD)
                     {
-                        selectedChoice = PHA_DEREFERENCE(PhGetWindowText(context->ComboBoxHandle));
+                        selectedChoice = PhAutoDereferenceObject(PhGetWindowText(context->ComboBoxHandle));
                         *context->SelectedChoice = selectedChoice;
                     }
                     else
@@ -312,7 +310,7 @@ INT_PTR CALLBACK PhpChoiceDlgProc(
                         if (selectedChoice->Length != 0)
                         {
                             escaped = PhEscapeStringForDelimiter(selectedChoice, '\\');
-                            PhAppendStringBuilder(&savedChoices, escaped);
+                            PhAppendStringBuilder(&savedChoices, &escaped->sr);
                             PhDereferenceObject(escaped);
                             PhAppendStringBuilder2(&savedChoices, L"\\s");
                         }
@@ -334,7 +332,7 @@ INT_PTR CALLBACK PhpChoiceDlgProc(
                             }
 
                             escaped = PhEscapeStringForDelimiter(choice, '\\');
-                            PhAppendStringBuilder(&savedChoices, escaped);
+                            PhAppendStringBuilder(&savedChoices, &escaped->sr);
                             PhDereferenceObject(escaped);
                             PhDereferenceObject(choice);
 
@@ -342,7 +340,7 @@ INT_PTR CALLBACK PhpChoiceDlgProc(
                         }
 
                         if (PhEndsWithString2(savedChoices.String, L"\\s", FALSE))
-                            PhRemoveStringBuilder(&savedChoices, savedChoices.String->Length / 2 - 2, 2);
+                            PhRemoveEndStringBuilder(&savedChoices, 2);
 
                         PhSetStringSetting2(context->SavedChoicesSettingName, &savedChoices.String->sr);
                         PhDeleteStringBuilder(&savedChoices);

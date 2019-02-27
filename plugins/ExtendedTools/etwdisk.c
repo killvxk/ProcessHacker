@@ -72,17 +72,9 @@ VOID EtInitializeDiskInformation(
     VOID
     )
 {
-    NTSTATUS status;
     LARGE_INTEGER performanceCounter;
 
-    if (!NT_SUCCESS(status = PhCreateObjectType(
-        &EtDiskItemType,
-        L"DiskItem",
-        0,
-        EtpDiskItemDeleteProcedure
-        )))
-        PhRaiseStatus(status);
-
+    EtDiskItemType = PhCreateObjectType(L"DiskItem", 0, EtpDiskItemDeleteProcedure);
     EtDiskHashtable = PhCreateHashtable(
         sizeof(PET_DISK_ITEM),
         EtpDiskHashtableCompareFunction,
@@ -116,14 +108,7 @@ PET_DISK_ITEM EtCreateDiskItem(
 {
     PET_DISK_ITEM diskItem;
 
-    if (!NT_SUCCESS(PhCreateObject(
-        &diskItem,
-        sizeof(ET_DISK_ITEM),
-        0,
-        EtDiskItemType
-        )))
-        return NULL;
-
+    diskItem = PhCreateObject(sizeof(ET_DISK_ITEM), EtDiskItemType);
     memset(diskItem, 0, sizeof(ET_DISK_ITEM));
 
     return diskItem;
@@ -143,32 +128,6 @@ VOID NTAPI EtpDiskItemDeleteProcedure(
     if (diskItem->ProcessRecord) PhDereferenceProcessRecord(diskItem->ProcessRecord);
 }
 
-// Copied from srvprv.c
-/**
- * Generates a hash code for a string, case-insensitive.
- *
- * \param String The string.
- * \param Count The number of characters to hash.
- */
-FORCEINLINE ULONG EtpHashStringIgnoreCase(
-    _In_ PWSTR String,
-    _In_ SIZE_T Count
-    )
-{
-    ULONG hash = (ULONG)Count;
-
-    if (Count == 0)
-        return 0;
-
-    do
-    {
-        hash = RtlUpcaseUnicodeChar(*String) + (hash << 6) + (hash << 16) - hash;
-        String++;
-    } while (--Count != 0);
-
-    return hash;
-}
-
 BOOLEAN NTAPI EtpDiskHashtableCompareFunction(
     _In_ PVOID Entry1,
     _In_ PVOID Entry2
@@ -186,7 +145,7 @@ ULONG NTAPI EtpDiskHashtableHashFunction(
 {
     PET_DISK_ITEM diskItem = *(PET_DISK_ITEM *)Entry;
 
-    return ((ULONG)diskItem->ProcessId / 4) ^ EtpHashStringIgnoreCase(diskItem->FileName->Buffer, diskItem->FileName->Length / sizeof(WCHAR));
+    return (HandleToUlong(diskItem->ProcessId) / 4) ^ PhHashStringRef(&diskItem->FileName->sr, TRUE);
 }
 
 PET_DISK_ITEM EtReferenceDiskItem(
@@ -210,14 +169,9 @@ PET_DISK_ITEM EtReferenceDiskItem(
         );
 
     if (diskItemPtr)
-    {
-        diskItem = *diskItemPtr;
-        PhReferenceObject(diskItem);
-    }
+        PhSetReference(&diskItem, *diskItemPtr);
     else
-    {
         diskItem = NULL;
-    }
 
     PhReleaseQueuedLockShared(&EtDiskHashtableLock);
 
@@ -266,7 +220,7 @@ VOID EtDiskProcessFileEvent(
         PhAcquireQueuedLockExclusive(&EtFileNameHashtableLock);
 
         realPair = PhAddEntryHashtableEx(EtFileNameHashtable, &pair, NULL);
-        PhSwapReference2(&realPair->Value, PhCreateStringEx(Event->FileName.Buffer, Event->FileName.Length));
+        PhMoveReference(&realPair->Value, PhCreateString2(&Event->FileName));
 
         PhReleaseQueuedLockExclusive(&EtFileNameHashtableLock);
     }
@@ -304,10 +258,7 @@ PPH_STRING EtFileObjectToFileName(
     realPair = PhFindEntryHashtable(EtFileNameHashtable, &pair);
 
     if (realPair)
-    {
-        fileName = realPair->Value;
-        PhReferenceObject(fileName);
-    }
+        PhSetReference(&fileName, realPair->Value);
 
     PhReleaseQueuedLockShared(&EtFileNameHashtableLock);
 
@@ -346,15 +297,12 @@ VOID EtpProcessDiskPacket(
         diskItem = EtCreateDiskItem();
 
         diskItem->ProcessId = diskEvent->ClientId.UniqueProcess;
-        diskItem->FileName = Packet->FileName;
-        PhReferenceObject(Packet->FileName);
+        PhSetReference(&diskItem->FileName, Packet->FileName);
         diskItem->FileNameWin32 = PhGetFileName(diskItem->FileName);
 
         if (processItem = PhReferenceProcessItem(diskItem->ProcessId))
         {
-            diskItem->ProcessName = processItem->ProcessName;
-            PhReferenceObject(processItem->ProcessName);
-
+            PhSetReference(&diskItem->ProcessName, processItem->ProcessName);
             diskItem->ProcessIcon = EtProcIconReferenceSmallProcessIcon(EtGetProcessBlock(processItem));
             diskItem->ProcessRecord = processItem->Record;
             PhReferenceProcessRecord(diskItem->ProcessRecord);
@@ -551,8 +499,7 @@ static VOID NTAPI ProcessesUpdatedCallback(
                 {
                     if (!diskItem->ProcessName)
                     {
-                        diskItem->ProcessName = processItem->ProcessName;
-                        PhReferenceObject(processItem->ProcessName);
+                        PhSetReference(&diskItem->ProcessName, processItem->ProcessName);
                         modified = TRUE;
                     }
 

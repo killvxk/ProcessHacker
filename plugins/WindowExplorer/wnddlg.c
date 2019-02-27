@@ -2,6 +2,7 @@
  * Process Hacker Window Explorer -
  *   window tree dialog
  *
+ * Copyright (C) 2016 dmex
  * Copyright (C) 2011 wj32
  *
  * This file is part of Process Hacker.
@@ -73,7 +74,7 @@ VOID WepShowWindowsDialogCallback(
     hwnd = CreateDialogParam(
         PluginInstance->DllBase,
         MAKEINTRESOURCE(IDD_WNDLIST),
-        WE_PhMainWndHandle,
+        NULL,
         WepWindowsDlgProc,
         (LPARAM)context
         );
@@ -264,7 +265,7 @@ PPH_STRING WepGetWindowTitleForSelector(
         break;
     case WeWindowSelectorThread:
         {
-            return PhFormatString(L"Windows - Thread %u", (ULONG)Selector->Thread.ThreadId);
+            return PhFormatString(L"Windows - Thread %lu", HandleToUlong(Selector->Thread.ThreadId));
         }
         break;
     case WeWindowSelectorProcess:
@@ -391,8 +392,7 @@ INT_PTR CALLBACK WepWindowsDlgProc(
                     POINT point;
                     PWE_WINDOW_NODE *windows;
                     ULONG numberOfWindows;
-                    HMENU menu;
-                    HMENU subMenu;
+                    PPH_EMENU menu;
 
                     point.x = (SHORT)LOWORD(lParam);
                     point.y = (SHORT)HIWORD(lParam);
@@ -405,9 +405,9 @@ INT_PTR CALLBACK WepWindowsDlgProc(
 
                     if (numberOfWindows != 0)
                     {
-                        menu = LoadMenu(PluginInstance->DllBase, MAKEINTRESOURCE(IDR_WINDOW));
-                        subMenu = GetSubMenu(menu, 0);
-                        SetMenuDefaultItem(subMenu, ID_WINDOW_PROPERTIES, FALSE);
+                        menu = PhCreateEMenu();
+                        PhLoadResourceEMenuItem(menu, PluginInstance->DllBase, MAKEINTRESOURCE(IDR_WINDOW), 0);
+                        PhSetFlagsEMenuItem(menu, ID_WINDOW_PROPERTIES, PH_EMENU_DEFAULT, PH_EMENU_DEFAULT);
 
                         if (numberOfWindows == 1)
                         {
@@ -422,26 +422,26 @@ INT_PTR CALLBACK WepWindowsDlgProc(
                             GetWindowPlacement(windows[0]->WindowHandle, &placement);
 
                             if (placement.showCmd == SW_MINIMIZE)
-                                PhEnableMenuItem(subMenu, ID_WINDOW_MINIMIZE, FALSE);
+                                PhSetFlagsEMenuItem(menu, ID_WINDOW_MINIMIZE, PH_EMENU_DISABLED, PH_EMENU_DISABLED);
                             else if (placement.showCmd == SW_MAXIMIZE)
-                                PhEnableMenuItem(subMenu, ID_WINDOW_MAXIMIZE, FALSE);
+                                PhSetFlagsEMenuItem(menu, ID_WINDOW_MAXIMIZE, PH_EMENU_DISABLED, PH_EMENU_DISABLED);
                             else if (placement.showCmd == SW_NORMAL)
-                                PhEnableMenuItem(subMenu, ID_WINDOW_RESTORE, FALSE);
+                                PhSetFlagsEMenuItem(menu, ID_WINDOW_RESTORE, PH_EMENU_DISABLED, PH_EMENU_DISABLED);
 
                             // Visible
 
-                            CheckMenuItem(subMenu, ID_WINDOW_VISIBLE,
-                                (GetWindowLong(windows[0]->WindowHandle, GWL_STYLE) & WS_VISIBLE) ? MF_CHECKED : MF_UNCHECKED);
+                            PhSetFlagsEMenuItem(menu, ID_WINDOW_VISIBLE, PH_EMENU_CHECKED,
+                                (GetWindowLong(windows[0]->WindowHandle, GWL_STYLE) & WS_VISIBLE) ? PH_EMENU_CHECKED : 0);
 
                             // Enabled
 
-                            CheckMenuItem(subMenu, ID_WINDOW_ENABLED,
-                                !(GetWindowLong(windows[0]->WindowHandle, GWL_STYLE) & WS_DISABLED) ? MF_CHECKED : MF_UNCHECKED);
+                            PhSetFlagsEMenuItem(menu, ID_WINDOW_ENABLED, PH_EMENU_CHECKED,
+                                !(GetWindowLong(windows[0]->WindowHandle, GWL_STYLE) & WS_DISABLED) ? PH_EMENU_CHECKED : 0);
 
                             // Always on Top
 
-                            CheckMenuItem(subMenu, ID_WINDOW_ALWAYSONTOP,
-                                (GetWindowLong(windows[0]->WindowHandle, GWL_EXSTYLE) & WS_EX_TOPMOST) ? MF_CHECKED : MF_UNCHECKED);
+                            PhSetFlagsEMenuItem(menu, ID_WINDOW_ALWAYSONTOP, PH_EMENU_CHECKED,
+                                (GetWindowLong(windows[0]->WindowHandle, GWL_EXSTYLE) & WS_EX_TOPMOST) ? PH_EMENU_CHECKED : 0);
 
                             // Opacity
 
@@ -476,26 +476,18 @@ INT_PTR CALLBACK WepWindowsDlgProc(
 
                             if (id != 0)
                             {
-                                CheckMenuRadioItem(subMenu, ID_OPACITY_10, ID_OPACITY_OPAQUE, id, MF_BYCOMMAND);
+                                PhSetFlagsEMenuItem(menu, id, PH_EMENU_CHECKED | PH_EMENU_RADIOCHECK,
+                                    PH_EMENU_CHECKED | PH_EMENU_RADIOCHECK);
                             }
                         }
                         else
                         {
-                            PhEnableAllMenuItems(subMenu, FALSE);
-                            PhEnableMenuItem(subMenu, ID_WINDOW_COPY, TRUE);
+                            PhSetFlagsAllEMenuItems(menu, PH_EMENU_DISABLED, PH_EMENU_DISABLED);
+                            PhSetFlagsEMenuItem(menu, ID_WINDOW_COPY, PH_EMENU_DISABLED, 0);
                         }
 
-                        TrackPopupMenu(
-                            subMenu,
-                            TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
-                            point.x,
-                            point.y,
-                            0,
-                            hwndDlg,
-                            NULL
-                            );
-
-                        DestroyMenu(menu);
+                        PhShowEMenu(menu, hwndDlg, PH_EMENU_SHOW_SEND_COMMAND | PH_EMENU_SHOW_LEFTRIGHT, PH_ALIGN_LEFT | PH_ALIGN_TOP, point.x, point.y);
+                        PhDestroyEMenu(menu);
                     }
                 }
                 break;
@@ -685,7 +677,7 @@ INT_PTR CALLBACK WepWindowsDlgProc(
                     PWE_WINDOW_NODE selectedNode;
 
                     if (selectedNode = WeGetSelectedWindowNode(&context->TreeContext))
-                        WeShowWindowProperties(WE_PhMainWndHandle, selectedNode->WindowHandle);
+                        WeShowWindowProperties(hwndDlg, selectedNode->WindowHandle);
                 }
                 break;
             case ID_WINDOW_COPY:
@@ -693,7 +685,7 @@ INT_PTR CALLBACK WepWindowsDlgProc(
                     PPH_STRING text;
 
                     text = PhGetTreeNewText(context->TreeNewHandle, 0);
-                    PhSetClipboardStringEx(hwndDlg, text->Buffer, text->Length);
+                    PhSetClipboardString(hwndDlg, &text->sr);
                     PhDereferenceObject(text);
                 }
                 break;

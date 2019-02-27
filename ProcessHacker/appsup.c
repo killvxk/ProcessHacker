@@ -2,7 +2,7 @@
  * Process Hacker -
  *   application support functions
  *
- * Copyright (C) 2010-2013 wj32
+ * Copyright (C) 2010-2016 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -22,13 +22,20 @@
 
 #include <phapp.h>
 #include <settings.h>
+#include <symprv.h>
 #include <cpysave.h>
 #include <phappres.h>
 #include <emenu.h>
 #include <phsvccl.h>
 #include "mxml/mxml.h"
+#include "pcre/pcre2.h"
 #include <winsta.h>
+
+#pragma warning(push)
+#pragma warning(disable: 4091) // Ignore 'no variable declared on typedef'
 #include <dbghelp.h>
+#pragma warning(pop)
+
 #include <appmodel.h>
 
 typedef LONG (WINAPI *_GetPackageFullName)(
@@ -56,6 +63,7 @@ GUID VISTA_CONTEXT_GUID = { 0xe2011457, 0x1546, 0x43c5, { 0xa5, 0xfe, 0x00, 0x8d
 GUID WIN7_CONTEXT_GUID = { 0x35138b9a, 0x5d96, 0x4fbd, { 0x8e, 0x2d, 0xa2, 0x44, 0x02, 0x25, 0xf9, 0x3a } };
 GUID WIN8_CONTEXT_GUID = { 0x4a2f28e3, 0x53b9, 0x4441, { 0xba, 0x9c, 0xd6, 0x9d, 0x4a, 0x4a, 0x6e, 0x38 } };
 GUID WINBLUE_CONTEXT_GUID = { 0x1f676c76, 0x80e1, 0x4239, { 0x95, 0xbb, 0x83, 0xd0, 0xf6, 0xd0, 0xda, 0x78 } };
+GUID WINTHRESHOLD_CONTEXT_GUID = { 0x8e0f7a12, 0xbfb3, 0x4fe8, { 0xb9, 0xa5, 0x48, 0xfd, 0x50, 0xa1, 0x5a, 0x9a } };
 
 /**
  * Determines whether a process is suspended.
@@ -95,7 +103,7 @@ NTSTATUS PhGetProcessSwitchContext(
 {
     NTSTATUS status;
     PROCESS_BASIC_INFORMATION basicInfo;
-#ifdef _M_X64
+#ifdef _WIN64
     PVOID peb32;
     ULONG data32;
 #endif
@@ -103,8 +111,9 @@ NTSTATUS PhGetProcessSwitchContext(
 
     // Reverse-engineered from WdcGetProcessSwitchContext (wdc.dll).
     // On Windows 8, the function is now SdbGetAppCompatData (apphelp.dll).
+    // On Windows 10, the function is again WdcGetProcessSwitchContext.
 
-#ifdef _M_X64
+#ifdef _WIN64
     if (NT_SUCCESS(PhGetProcessPeb32(ProcessHandle, &peb32)) && peb32)
     {
         if (WindowsVersion >= WINDOWS_8)
@@ -160,14 +169,25 @@ NTSTATUS PhGetProcessSwitchContext(
                 )))
                 return status;
         }
-#ifdef _M_X64
+#ifdef _WIN64
     }
 #endif
 
     if (!data)
         return STATUS_UNSUCCESSFUL; // no compatibility context data
 
-    if (WindowsVersion >= WINDOWS_81)
+    if (WindowsVersion >= WINDOWS_10)
+    {
+        if (!NT_SUCCESS(status = PhReadVirtualMemory(
+            ProcessHandle,
+            PTR_ADD_OFFSET(data, 2040 + 24), // Magic value from SbReadProcContextByHandle
+            Guid,
+            sizeof(GUID),
+            NULL
+            )))
+            return status;
+    }
+    else if (WindowsVersion >= WINDOWS_8_1)
     {
         if (!NT_SUCCESS(status = PhReadVirtualMemory(
             ProcessHandle,
@@ -215,7 +235,7 @@ PPH_STRING PhGetProcessPackageFullName(
     ULONG nameLength;
 
     if (!getPackageFullName)
-        getPackageFullName = PhGetProcAddress(L"kernel32.dll", "GetPackageFullName");
+        getPackageFullName = PhGetModuleProcAddress(L"kernel32.dll", "GetPackageFullName");
     if (!getPackageFullName)
         return NULL;
 
@@ -255,7 +275,7 @@ PACKAGE_ID *PhPackageIdFromFullName(
     ULONG packageIdBufferSize;
 
     if (!packageIdFromFullName)
-        packageIdFromFullName = PhGetProcAddress(L"kernel32.dll", "PackageIdFromFullName");
+        packageIdFromFullName = PhGetModuleProcAddress(L"kernel32.dll", "PackageIdFromFullName");
     if (!packageIdFromFullName)
         return NULL;
 
@@ -294,7 +314,7 @@ PPH_STRING PhGetPackagePath(
     ULONG pathLength;
 
     if (!getPackagePath)
-        getPackagePath = PhGetProcAddress(L"kernel32.dll", "GetPackagePath");
+        getPackagePath = PhGetModuleProcAddress(L"kernel32.dll", "GetPackagePath");
     if (!getPackagePath)
         return NULL;
 
@@ -323,25 +343,6 @@ PPH_STRING PhGetPackagePath(
     }
 }
 
-VOID PhEnumChildWindows(
-    _In_opt_ HWND hWnd,
-    _In_ ULONG Limit,
-    _In_ WNDENUMPROC Callback,
-    _In_ LPARAM lParam
-    )
-{
-    HWND childWindow = NULL;
-    ULONG i = 0;
-
-    while (i < Limit && (childWindow = FindWindowEx(hWnd, childWindow, NULL, NULL)))
-    {
-        if (!Callback(childWindow, lParam))
-            return;
-
-        i++;
-    }
-}
-
 /**
  * Determines the type of a process based on its image file name.
  *
@@ -361,7 +362,7 @@ NTSTATUS PhGetProcessKnownType(
     PPH_STRING fileName;
     PPH_STRING newFileName;
     PH_STRINGREF name;
-#ifdef _M_X64
+#ifdef _WIN64
     BOOLEAN isWow64 = FALSE;
 #endif
 
@@ -399,8 +400,7 @@ NTSTATUS PhGetProcessKnownType(
         // 1. \\xyz.exe - Windows executable.
         // 2. \\System32\\xyz.exe - system32 executable.
         // 3. \\SysWow64\\xyz.exe - system32 executable + WOW64.
-        name.Buffer += systemRootPrefix.Length / 2;
-        name.Length -= systemRootPrefix.Length;
+        PhSkipStringRef(&name, systemRootPrefix.Length);
 
         if (PhEqualStringRef2(&name, L"\\explorer.exe", TRUE))
         {
@@ -408,14 +408,13 @@ NTSTATUS PhGetProcessKnownType(
         }
         else if (
             PhStartsWithStringRef2(&name, L"\\System32", TRUE)
-#ifdef _M_X64
+#ifdef _WIN64
             || (PhStartsWithStringRef2(&name, L"\\SysWow64", TRUE) && (isWow64 = TRUE, TRUE)) // ugly but necessary
 #endif
             )
         {
             // SysTem32 and SysWow64 are both 8 characters long.
-            name.Buffer += 9;
-            name.Length -= 9 * 2;
+            PhSkipStringRef(&name, 9 * sizeof(WCHAR));
 
             if (FALSE)
                 ; // Dummy
@@ -445,12 +444,16 @@ NTSTATUS PhGetProcessKnownType(
                 knownProcessType = TaskHostProcessType;
             else if (PhEqualStringRef2(&name, L"\\taskhostex.exe", TRUE))
                 knownProcessType = TaskHostProcessType;
+            else if (PhEqualStringRef2(&name, L"\\taskhostw.exe", TRUE))
+                knownProcessType = TaskHostProcessType;
+            else if (PhEqualStringRef2(&name, L"\\wudfhost.exe", TRUE))
+                knownProcessType = UmdfHostProcessType;
         }
     }
 
     PhDereferenceObject(newFileName);
 
-#ifdef _M_X64
+#ifdef _WIN64
     if (isWow64)
         knownProcessType |= KnownProcessWow64;
 #endif
@@ -506,7 +509,7 @@ BOOLEAN PhaGetProcessKnownCommandLine(
 
             if (KnownCommandLine->ServiceHost.GroupName)
             {
-                PhaDereferenceObject(KnownCommandLine->ServiceHost.GroupName);
+                PhAutoDereferenceObject(KnownCommandLine->ServiceHost.GroupName);
                 return TRUE;
             }
             else
@@ -520,7 +523,8 @@ BOOLEAN PhaGetProcessKnownCommandLine(
             // rundll32.exe <DllName>,<ProcedureName> ...
 
             SIZE_T i;
-            ULONG_PTR lastIndexOfComma;
+            PH_STRINGREF dllNamePart;
+            PH_STRINGREF procedureNamePart;
             PPH_STRING dllName;
             PPH_STRING procedureName;
 
@@ -545,21 +549,15 @@ BOOLEAN PhaGetProcessKnownCommandLine(
             if (!dllName)
                 return FALSE;
 
-            PhaDereferenceObject(dllName);
+            PhAutoDereferenceObject(dllName);
 
             // The procedure name begins after the last comma.
 
-            lastIndexOfComma = PhFindLastCharInString(dllName, 0, ',');
-
-            if (lastIndexOfComma == -1)
+            if (!PhSplitStringRefAtLastChar(&dllName->sr, ',', &dllNamePart, &procedureNamePart))
                 return FALSE;
 
-            procedureName = PhaSubstring(
-                dllName,
-                lastIndexOfComma + 1,
-                dllName->Length / 2 - lastIndexOfComma - 1
-                );
-            dllName = PhaSubstring(dllName, 0, lastIndexOfComma);
+            dllName = PhAutoDereferenceObject(PhCreateString2(&dllNamePart));
+            procedureName = PhAutoDereferenceObject(PhCreateString2(&procedureNamePart));
 
             // If the DLL name isn't an absolute path, assume it's in system32.
             // TODO: Use a proper search function.
@@ -568,7 +566,7 @@ BOOLEAN PhaGetProcessKnownCommandLine(
             {
                 dllName = PhaConcatStrings(
                     3,
-                    ((PPH_STRING)PHA_DEREFERENCE(PhGetSystemDirectory()))->Buffer,
+                    ((PPH_STRING)PhAutoDereferenceObject(PhGetSystemDirectory()))->Buffer,
                     L"\\",
                     dllName->Buffer
                     );
@@ -615,7 +613,7 @@ BOOLEAN PhaGetProcessKnownCommandLine(
             if (!argPart)
                 return FALSE;
 
-            PhaDereferenceObject(argPart);
+            PhAutoDereferenceObject(argPart);
 
             // Find "/processid:"; the GUID is just after that.
 
@@ -653,7 +651,7 @@ BOOLEAN PhaGetProcessKnownCommandLine(
                 )))
             {
                 KnownCommandLine->ComSurrogate.Name =
-                    PHA_DEREFERENCE(PhQueryRegistryString(clsidKeyHandle, NULL));
+                    PhAutoDereferenceObject(PhQueryRegistryString(clsidKeyHandle, NULL));
 
                 if (NT_SUCCESS(PhOpenKey(
                     &inprocServer32KeyHandle,
@@ -664,9 +662,9 @@ BOOLEAN PhaGetProcessKnownCommandLine(
                     )))
                 {
                     KnownCommandLine->ComSurrogate.FileName =
-                        PHA_DEREFERENCE(PhQueryRegistryString(inprocServer32KeyHandle, NULL));
+                        PhAutoDereferenceObject(PhQueryRegistryString(inprocServer32KeyHandle, NULL));
 
-                    if (fileName = PHA_DEREFERENCE(PhExpandEnvironmentStrings(
+                    if (fileName = PhAutoDereferenceObject(PhExpandEnvironmentStrings(
                         &KnownCommandLine->ComSurrogate.FileName->sr
                         )))
                     {
@@ -685,6 +683,142 @@ BOOLEAN PhaGetProcessKnownCommandLine(
     }
 
     return TRUE;
+}
+
+VOID PhEnumChildWindows(
+    _In_opt_ HWND hWnd,
+    _In_ ULONG Limit,
+    _In_ WNDENUMPROC Callback,
+    _In_ LPARAM lParam
+    )
+{
+    HWND childWindow = NULL;
+    ULONG i = 0;
+
+    while (i < Limit && (childWindow = FindWindowEx(hWnd, childWindow, NULL, NULL)))
+    {
+        if (!Callback(childWindow, lParam))
+            return;
+
+        i++;
+    }
+}
+
+typedef struct _GET_PROCESS_MAIN_WINDOW_CONTEXT
+{
+    HWND Window;
+    HWND ImmersiveWindow;
+    HANDLE ProcessId;
+    BOOLEAN IsImmersive;
+} GET_PROCESS_MAIN_WINDOW_CONTEXT, *PGET_PROCESS_MAIN_WINDOW_CONTEXT;
+
+BOOL CALLBACK PhpGetProcessMainWindowEnumWindowsProc(
+    _In_ HWND hwnd,
+    _In_ LPARAM lParam
+    )
+{
+    PGET_PROCESS_MAIN_WINDOW_CONTEXT context = (PGET_PROCESS_MAIN_WINDOW_CONTEXT)lParam;
+    ULONG processId;
+    HWND parentWindow;
+    WINDOWINFO windowInfo;
+
+    if (!IsWindowVisible(hwnd))
+        return TRUE;
+
+    GetWindowThreadProcessId(hwnd, &processId);
+
+    if (UlongToHandle(processId) == context->ProcessId &&
+        !((parentWindow = GetParent(hwnd)) && IsWindowVisible(parentWindow)) && // skip windows with a visible parent
+        PhGetWindowTextEx(hwnd, PH_GET_WINDOW_TEXT_INTERNAL | PH_GET_WINDOW_TEXT_LENGTH_ONLY, NULL) != 0) // skip windows with no title
+    {
+        if (!context->ImmersiveWindow && context->IsImmersive &&
+            GetProp(hwnd, L"Windows.ImmersiveShell.IdentifyAsMainCoreWindow"))
+        {
+            context->ImmersiveWindow = hwnd;
+        }
+
+        windowInfo.cbSize = sizeof(WINDOWINFO);
+
+        if (!context->Window && GetWindowInfo(hwnd, &windowInfo) && (windowInfo.dwStyle & WS_DLGFRAME))
+        {
+            context->Window = hwnd;
+
+            // If we're not looking at an immersive process, there's no need to search any more windows.
+            if (!context->IsImmersive)
+                return FALSE;
+        }
+    }
+
+    return TRUE;
+}
+
+HWND PhGetProcessMainWindow(
+    _In_ HANDLE ProcessId,
+    _In_opt_ HANDLE ProcessHandle
+    )
+{
+    GET_PROCESS_MAIN_WINDOW_CONTEXT context;
+    HANDLE processHandle = NULL;
+
+    memset(&context, 0, sizeof(GET_PROCESS_MAIN_WINDOW_CONTEXT));
+    context.ProcessId = ProcessId;
+
+    if (ProcessHandle)
+        processHandle = ProcessHandle;
+    else
+        PhOpenProcess(&processHandle, ProcessQueryAccess, ProcessId);
+
+    if (processHandle && IsImmersiveProcess_I)
+        context.IsImmersive = IsImmersiveProcess_I(processHandle);
+
+    PhEnumChildWindows(NULL, 0x800, PhpGetProcessMainWindowEnumWindowsProc, (LPARAM)&context);
+
+    if (!ProcessHandle && processHandle)
+        NtClose(processHandle);
+
+    return context.ImmersiveWindow ? context.ImmersiveWindow : context.Window;
+}
+
+PPH_STRING PhGetServiceRelevantFileName(
+    _In_ PPH_STRINGREF ServiceName,
+    _In_ SC_HANDLE ServiceHandle
+    )
+{
+    PPH_STRING fileName = NULL;
+    LPQUERY_SERVICE_CONFIG config;
+
+    if (config = PhGetServiceConfig(ServiceHandle))
+    {
+        PhGetServiceDllParameter(ServiceName, &fileName);
+
+        if (!fileName)
+        {
+            PPH_STRING commandLine;
+
+            commandLine = PhCreateString(config->lpBinaryPathName);
+
+            if (config->dwServiceType & SERVICE_WIN32)
+            {
+                PH_STRINGREF dummyFileName;
+                PH_STRINGREF dummyArguments;
+
+                PhParseCommandLineFuzzy(&commandLine->sr, &dummyFileName, &dummyArguments, &fileName);
+
+                if (!fileName)
+                    PhSwapReference(&fileName, commandLine);
+            }
+            else
+            {
+                fileName = PhGetFileName(commandLine);
+            }
+
+            PhDereferenceObject(commandLine);
+        }
+
+        PhFree(config);
+    }
+
+    return fileName;
 }
 
 PPH_STRING PhEscapeStringForDelimiter(
@@ -760,7 +894,7 @@ PPH_STRING PhGetOpaqueXmlNodeText(
 {
     if (node->child && node->child->type == MXML_OPAQUE && node->child->value.opaque)
     {
-        return PhCreateStringFromAnsi(node->child->value.opaque);
+        return PhConvertUtf8ToUtf16(node->child->value.opaque);
     }
     else
     {
@@ -813,8 +947,7 @@ VOID PhShellExecuteUserString(
     }
     else
     {
-        newString = executeString;
-        PhReferenceObject(newString);
+        PhSetReference(&newString, executeString);
     }
 
     PhDereferenceObject(executeString);
@@ -892,7 +1025,7 @@ VOID PhCopyListViewInfoTip(
 
     if (GetInfoTip->dwFlags == 0)
     {
-        copyIndex = (ULONG)wcslen(GetInfoTip->pszText) + 1; // plus one for newline
+        copyIndex = (ULONG)PhCountStringZ(GetInfoTip->pszText) + 1; // plus one for newline
 
         if (GetInfoTip->cchTextMax - copyIndex < 2) // need at least two bytes
             return;
@@ -1023,6 +1156,33 @@ HFONT PhDuplicateFontWithNewWeight(
     }
 }
 
+VOID PhSetWindowOpacity(
+    _In_ HWND WindowHandle,
+    _In_ ULONG OpacityPercent
+    )
+{
+    if (OpacityPercent == 0)
+    {
+        // Make things a bit faster by removing the WS_EX_LAYERED bit.
+        PhSetWindowExStyle(WindowHandle, WS_EX_LAYERED, 0);
+        RedrawWindow(WindowHandle, NULL, NULL, RDW_ERASE | RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
+        return;
+    }
+
+    PhSetWindowExStyle(WindowHandle, WS_EX_LAYERED, WS_EX_LAYERED);
+
+    // Disallow opacity values of less than 10%.
+    OpacityPercent = min(OpacityPercent, 90);
+
+    // The opacity value is backwards - 0 means opaque, 100 means transparent.
+    SetLayeredWindowAttributes(
+        WindowHandle,
+        0,
+        (BYTE)(255 * (100 - OpacityPercent) / 100),
+        LWA_ALPHA
+        );
+}
+
 VOID PhLoadWindowPlacementFromSetting(
     _In_opt_ PWSTR PositionSettingName,
     _In_opt_ PWSTR SizeSettingName,
@@ -1043,7 +1203,7 @@ VOID PhLoadWindowPlacementFromSetting(
             &windowRectangle
             );
 
-        // Let the window adjust the minimum size if needed.
+        // Let the window adjust for the minimum size if needed.
         rectForAdjust = PhRectangleToRect(windowRectangle);
         SendMessage(WindowHandle, WM_SIZING, WMSZ_BOTTOMRIGHT, (LPARAM)&rectForAdjust);
         windowRectangle = PhRectToRectangle(rectForAdjust);
@@ -1101,8 +1261,8 @@ VOID PhSaveWindowPlacementToSetting(
     // The rectangle is in workspace coordinates. Convert the values back to screen coordinates.
     if (GetMonitorInfo(MonitorFromRect(&placement.rcNormalPosition, MONITOR_DEFAULTTOPRIMARY), &monitorInfo))
     {
-        windowRectangle.Left += monitorInfo.rcWork.left;
-        windowRectangle.Top += monitorInfo.rcWork.top;
+        windowRectangle.Left += monitorInfo.rcWork.left - monitorInfo.rcMonitor.left;
+        windowRectangle.Top += monitorInfo.rcWork.top - monitorInfo.rcMonitor.top;
     }
 
     if (PositionSettingName)
@@ -1173,23 +1333,23 @@ VOID PhWritePhTextHeader(
     PPH_STRING dateString;
     PPH_STRING timeString;
 
-    PhWriteStringAsAnsiFileStream2(FileStream, L"Process Hacker ");
+    PhWriteStringAsUtf8FileStream2(FileStream, L"Process Hacker ");
 
     if (version = PhGetPhVersion())
     {
-        PhWriteStringAsAnsiFileStream(FileStream, &version->sr);
+        PhWriteStringAsUtf8FileStream(FileStream, &version->sr);
         PhDereferenceObject(version);
     }
 
-    PhWriteStringFormatFileStream(FileStream, L"\r\nWindows NT %u.%u", PhOsVersion.dwMajorVersion, PhOsVersion.dwMinorVersion);
+    PhWriteStringFormatAsUtf8FileStream(FileStream, L"\r\nWindows NT %u.%u", PhOsVersion.dwMajorVersion, PhOsVersion.dwMinorVersion);
 
     if (PhOsVersion.szCSDVersion[0] != 0)
-        PhWriteStringFormatFileStream(FileStream, L" %s", PhOsVersion.szCSDVersion);
+        PhWriteStringFormatAsUtf8FileStream(FileStream, L" %s", PhOsVersion.szCSDVersion);
 
-#ifdef _M_IX86
-    PhWriteStringAsAnsiFileStream2(FileStream, L" (32-bit)");
+#ifdef _WIN64
+    PhWriteStringAsUtf8FileStream2(FileStream, L" (64-bit)");
 #else
-    PhWriteStringAsAnsiFileStream2(FileStream, L" (64-bit)");
+    PhWriteStringAsUtf8FileStream2(FileStream, L" (32-bit)");
 #endif
 
     PhQuerySystemTime(&time);
@@ -1197,13 +1357,36 @@ VOID PhWritePhTextHeader(
 
     dateString = PhFormatDate(&systemTime, NULL);
     timeString = PhFormatTime(&systemTime, NULL);
-    PhWriteStringFormatFileStream(FileStream, L"\r\n%s %s\r\n\r\n", dateString->Buffer, timeString->Buffer);
+    PhWriteStringFormatAsUtf8FileStream(FileStream, L"\r\n%s %s\r\n\r\n", dateString->Buffer, timeString->Buffer);
     PhDereferenceObject(dateString);
     PhDereferenceObject(timeString);
 }
 
 BOOLEAN PhShellProcessHacker(
-    _In_ HWND hWnd,
+    _In_opt_ HWND hWnd,
+    _In_opt_ PWSTR Parameters,
+    _In_ ULONG ShowWindowType,
+    _In_ ULONG Flags,
+    _In_ ULONG AppFlags,
+    _In_opt_ ULONG Timeout,
+    _Out_opt_ PHANDLE ProcessHandle
+    )
+{
+    return PhShellProcessHackerEx(
+        hWnd,
+        NULL,
+        Parameters,
+        ShowWindowType,
+        Flags,
+        AppFlags,
+        Timeout,
+        ProcessHandle
+        );
+}
+
+BOOLEAN PhShellProcessHackerEx(
+    _In_opt_ HWND hWnd,
+    _In_opt_ PWSTR FileName,
     _In_opt_ PWSTR Parameters,
     _In_ ULONG ShowWindowType,
     _In_ ULONG Flags,
@@ -1221,9 +1404,6 @@ BOOLEAN PhShellProcessHacker(
     {
         PhInitializeStringBuilder(&sb, 128);
 
-        if (Parameters)
-            PhAppendStringBuilder2(&sb, Parameters);
-
         // Propagate parameters.
 
         if (PhStartupParameters.NoSettings)
@@ -1239,7 +1419,7 @@ BOOLEAN PhShellProcessHacker(
             else
                 temp = PhEscapeCommandLinePart(&PhStartupParameters.SettingsFileName->sr);
 
-            PhAppendStringBuilder(&sb, temp);
+            PhAppendStringBuilder(&sb, &temp->sr);
             PhDereferenceObject(temp);
             PhAppendCharStringBuilder(&sb, '\"');
         }
@@ -1259,6 +1439,15 @@ BOOLEAN PhShellProcessHacker(
             PhAppendStringBuilder2(&sb, L" -newinstance");
         }
 
+        if (PhStartupParameters.SelectTab)
+        {
+            PhAppendStringBuilder2(&sb, L" -selecttab \"");
+            temp = PhEscapeCommandLinePart(&PhStartupParameters.SelectTab->sr);
+            PhAppendStringBuilder(&sb, &temp->sr);
+            PhDereferenceObject(temp);
+            PhAppendCharStringBuilder(&sb, '\"');
+        }
+
         if (!(AppFlags & PH_SHELL_APP_PROPAGATE_PARAMETERS_IGNORE_VISIBILITY))
         {
             if (PhStartupParameters.ShowVisible)
@@ -1272,7 +1461,17 @@ BOOLEAN PhShellProcessHacker(
             }
         }
 
-        parameters = sb.String->Buffer;
+        // Add user-specified parameters last so they can override the propagated parameters.
+        if (Parameters)
+        {
+            PhAppendCharStringBuilder(&sb, ' ');
+            PhAppendStringBuilder2(&sb, Parameters);
+        }
+
+        if (sb.String->Length != 0 && sb.String->Buffer[0] == ' ')
+            parameters = sb.String->Buffer + 1;
+        else
+            parameters = sb.String->Buffer;
     }
     else
     {
@@ -1281,7 +1480,7 @@ BOOLEAN PhShellProcessHacker(
 
     result = PhShellExecuteEx(
         hWnd,
-        PhApplicationFileName->Buffer,
+        FileName ? FileName : PhApplicationFileName->Buffer,
         parameters,
         ShowWindowType,
         Flags,
@@ -1306,8 +1505,8 @@ BOOLEAN PhCreateProcessIgnoreIfeoDebugger(
     STARTUPINFO startupInfo;
     PROCESS_INFORMATION processInfo;
 
-    if (!(debugSetProcessKillOnExit = PhGetProcAddress(L"kernel32.dll", "DebugSetProcessKillOnExit")) ||
-        !(debugActiveProcessStop = PhGetProcAddress(L"kernel32.dll", "DebugActiveProcessStop")))
+    if (!(debugSetProcessKillOnExit = PhGetModuleProcAddress(L"kernel32.dll", "DebugSetProcessKillOnExit")) ||
+        !(debugActiveProcessStop = PhGetModuleProcAddress(L"kernel32.dll", "DebugActiveProcessStop")))
         return FALSE;
 
     result = FALSE;
@@ -1352,6 +1551,7 @@ VOID PhInitializeTreeNewColumnMenuEx(
     _In_ ULONG Flags
     )
 {
+    PPH_EMENU_ITEM resetSortMenuItem = NULL;
     PPH_EMENU_ITEM sizeColumnToFitMenuItem;
     PPH_EMENU_ITEM sizeAllColumnsToFitMenuItem;
     PPH_EMENU_ITEM hideColumnMenuItem;
@@ -1371,12 +1571,27 @@ VOID PhInitializeTreeNewColumnMenuEx(
         chooseColumnsMenuItem = PhCreateEMenuItem(0, PH_TN_COLUMN_MENU_CHOOSE_COLUMNS_ID, L"Choose Columns...", NULL, NULL);
     }
 
+    if (Flags & PH_TN_COLUMN_MENU_SHOW_RESET_SORT)
+    {
+        ULONG sortColumn;
+        PH_SORT_ORDER sortOrder;
+
+        TreeNew_GetSort(Data->TreeNewHandle, &sortColumn, &sortOrder);
+
+        if (sortOrder != Data->DefaultSortOrder || (Data->DefaultSortOrder != NoSortOrder && sortColumn != Data->DefaultSortColumn))
+            resetSortMenuItem = PhCreateEMenuItem(0, PH_TN_COLUMN_MENU_RESET_SORT_ID, L"Reset Sort", NULL, NULL);
+    }
+
     PhInsertEMenuItem(Data->Menu, sizeColumnToFitMenuItem, -1);
     PhInsertEMenuItem(Data->Menu, sizeAllColumnsToFitMenuItem, -1);
 
     if (!(Flags & PH_TN_COLUMN_MENU_NO_VISIBILITY))
     {
         PhInsertEMenuItem(Data->Menu, hideColumnMenuItem, -1);
+
+        if (resetSortMenuItem)
+            PhInsertEMenuItem(Data->Menu, resetSortMenuItem, -1);
+
         PhInsertEMenuItem(Data->Menu, PhCreateEMenuItem(PH_EMENU_SEPARATOR, 0, L"", NULL, NULL), -1);
         PhInsertEMenuItem(Data->Menu, chooseColumnsMenuItem, -1);
 
@@ -1392,6 +1607,11 @@ VOID PhInitializeTreeNewColumnMenuEx(
         {
             hideColumnMenuItem->Flags |= PH_EMENU_DISABLED;
         }
+    }
+    else
+    {
+        if (resetSortMenuItem)
+            PhInsertEMenuItem(Data->Menu, resetSortMenuItem, -1);
     }
 
     if (!Data->MouseEvent || !Data->MouseEvent->Column)
@@ -1474,11 +1694,16 @@ BOOLEAN PhHandleTreeNewColumnMenu(
 
     switch (Data->Selection->Id)
     {
+    case PH_TN_COLUMN_MENU_RESET_SORT_ID:
+        {
+            TreeNew_SetSort(Data->TreeNewHandle, Data->DefaultSortColumn, Data->DefaultSortOrder);
+        }
+        break;
     case PH_TN_COLUMN_MENU_SIZE_COLUMN_TO_FIT_ID:
         {
             if (Data->MouseEvent && Data->MouseEvent->Column)
             {
-                TreeNew_AutoSizeColumn(Data->TreeNewHandle, Data->MouseEvent->Column->Id);
+                TreeNew_AutoSizeColumn(Data->TreeNewHandle, Data->MouseEvent->Column->Id, 0);
             }
         }
         break;
@@ -1492,7 +1717,7 @@ BOOLEAN PhHandleTreeNewColumnMenu(
 
             while (id <= maxId)
             {
-                TreeNew_AutoSizeColumn(Data->TreeNewHandle, id);
+                TreeNew_AutoSizeColumn(Data->TreeNewHandle, id, 0);
                 id++;
             }
         }
@@ -1736,13 +1961,13 @@ BOOLEAN PhHandleCopyCellEMenuItem(
             PhInitializeEmptyStringRef(&getCellText.Text);
             TreeNew_GetCellText(context->TreeNewHandle, &getCellText);
 
-            PhAppendStringBuilderEx(&stringBuilder, getCellText.Text.Buffer, getCellText.Text.Length);
+            PhAppendStringBuilder(&stringBuilder, &getCellText.Text);
             PhAppendStringBuilder2(&stringBuilder, L"\r\n");
         }
     }
 
     if (stringBuilder.String->Length != 0 && selectedCount == 1)
-        PhRemoveStringBuilder(&stringBuilder, stringBuilder.String->Length / 2 - 2, 2);
+        PhRemoveEndStringBuilder(&stringBuilder, 2);
 
     PhSetClipboardString(context->TreeNewHandle, &stringBuilder.String->sr);
     PhDeleteStringBuilder(&stringBuilder);
@@ -1906,4 +2131,36 @@ CleanupExit:
         PhUiDisconnectFromPhSvc();
 
     return result;
+}
+
+PPH_STRING PhPcre2GetErrorMessage(
+    _In_ INT ErrorCode
+    )
+{
+    PPH_STRING buffer;
+    SIZE_T bufferLength;
+    INT_PTR returnLength;
+
+    bufferLength = 128 * sizeof(WCHAR);
+    buffer = PhCreateStringEx(NULL, bufferLength);
+
+    while (TRUE)
+    {
+        if ((returnLength = pcre2_get_error_message(ErrorCode, buffer->Buffer, bufferLength / sizeof(WCHAR) + 1)) >= 0)
+            break;
+
+        PhDereferenceObject(buffer);
+        bufferLength *= 2;
+
+        if (bufferLength > 0x1000 * sizeof(WCHAR))
+            break;
+
+        buffer = PhCreateStringEx(NULL, bufferLength);
+    }
+
+    if (returnLength < 0)
+        return NULL;
+
+    buffer->Length = returnLength * sizeof(WCHAR);
+    return buffer;
 }

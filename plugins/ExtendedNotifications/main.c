@@ -111,7 +111,7 @@ LOGICAL DllMain(
         {
             PPH_PLUGIN_INFORMATION info;
 
-            PluginInstance = PhRegisterPlugin(L"ProcessHacker.ExtendedNotifications", Instance, &info);
+            PluginInstance = PhRegisterPlugin(PLUGIN_NAME, Instance, &info);
 
             if (!PluginInstance)
                 return FALSE;
@@ -119,6 +119,7 @@ LOGICAL DllMain(
             info->DisplayName = L"Extended Notifications";
             info->Author = L"wj32";
             info->Description = L"Filters notifications.";
+            info->Url = L"http://processhacker.sf.net/forums/viewtopic.php?t=1112";
             info->HasOptions = TRUE;
 
             PhRegisterCallback(
@@ -435,7 +436,7 @@ VOID NTAPI NotifyEventCallback(
     PPH_PROCESS_ITEM processItem;
     PPH_SERVICE_ITEM serviceItem;
     FILTER_TYPE filterType;
-    BOOLEAN found;
+    BOOLEAN found = FALSE;
 
     filterType = FilterExclude;
 
@@ -491,9 +492,9 @@ VOID NotifyGrowl(
 {
     PSTR notification;
     PPH_STRING title;
-    PPH_ANSI_STRING titleAnsi;
+    PPH_BYTES titleUtf8;
     PPH_STRING message;
-    PPH_ANSI_STRING messageAnsi;
+    PPH_BYTES messageUtf8;
     PPH_PROCESS_ITEM processItem;
     PPH_SERVICE_ITEM serviceItem;
     PPH_PROCESS_ITEM parentProcessItem;
@@ -516,9 +517,9 @@ VOID NotifyGrowl(
             );
 
         message = PhFormatString(
-            L"The process %s (%u) was started by %s.",
+            L"The process %s (%lu) was started by %s.",
             processItem->ProcessName->Buffer,
-            (ULONG)processItem->ProcessId,
+            HandleToUlong(processItem->ProcessId),
             parentProcessItem ? parentProcessItem->ProcessName->Buffer : L"an unknown process"
             );
 
@@ -532,9 +533,9 @@ VOID NotifyGrowl(
         title = processItem->ProcessName;
         PhReferenceObject(title);
 
-        message = PhFormatString(L"The process %s (%u) was terminated.",
+        message = PhFormatString(L"The process %s (%lu) was terminated.",
             processItem->ProcessName->Buffer,
-            (ULONG)processItem->ProcessId
+            HandleToUlong(processItem->ProcessId)
             );
 
         break;
@@ -590,16 +591,16 @@ VOID NotifyGrowl(
         return;
     }
 
-    titleAnsi = PhCreateAnsiStringFromUnicodeEx(title->Buffer, title->Length);
-    messageAnsi = PhCreateAnsiStringFromUnicodeEx(message->Buffer, message->Length);
+    titleUtf8 = PhConvertUtf16ToUtf8Ex(title->Buffer, title->Length);
+    messageUtf8 = PhConvertUtf16ToUtf8Ex(message->Buffer, message->Length);
 
     RegisterGrowl(TRUE);
 
-    if (growl_tcp_notify("127.0.0.1", "Process Hacker", notification, titleAnsi->Buffer, messageAnsi->Buffer, NULL, NULL, NULL) == 0)
+    if (growl_tcp_notify("127.0.0.1", "Process Hacker", notification, titleUtf8->Buffer, messageUtf8->Buffer, NULL, NULL, NULL) == 0)
         NotifyEvent->Handled = TRUE;
 
-    PhDereferenceObject(messageAnsi);
-    PhDereferenceObject(titleAnsi);
+    PhDereferenceObject(messageUtf8);
+    PhDereferenceObject(titleUtf8);
     PhDereferenceObject(message);
     PhDereferenceObject(title);
 }
@@ -641,23 +642,19 @@ VOID AddEntriesToListBox(
 PPH_LIST EditingProcessFilterList;
 PPH_LIST EditingServiceFilterList;
 
-static LRESULT CALLBACK TextBoxWndProc(
-    _In_ HWND hwnd,
+static LRESULT CALLBACK TextBoxSubclassProc(
+    _In_ HWND hWnd,
     _In_ UINT uMsg,
     _In_ WPARAM wParam,
-    _In_ LPARAM lParam
+    _In_ LPARAM lParam,
+    _In_ UINT_PTR uIdSubclass,
+    _In_ ULONG_PTR dwRefData
     )
 {
-    WNDPROC oldWndProc;
-
-    oldWndProc = (WNDPROC)GetProp(hwnd, L"OldWndProc");
-
     switch (uMsg)
     {
-    case WM_DESTROY:
-        {
-            RemoveProp(hwnd, L"OldWndProc");
-        }
+    case WM_NCDESTROY:
+        RemoveWindowSubclass(hWnd, TextBoxSubclassProc, uIdSubclass);
         break;
     case WM_GETDLGCODE:
         {
@@ -669,14 +666,14 @@ static LRESULT CALLBACK TextBoxWndProc(
         {
             if (wParam == VK_RETURN)
             {
-                SendMessage(GetParent(hwnd), WM_COMMAND, IDC_TEXT_RETURN, 0);
+                SendMessage(GetParent(hWnd), WM_COMMAND, IDC_TEXT_RETURN, 0);
                 return 0;
             }
         }
         break;
     }
 
-    return CallWindowProc(oldWndProc, hwnd, uMsg, wParam, lParam);
+    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
 VOID FixControlStates(
@@ -708,13 +705,7 @@ INT_PTR HandleCommonMessages(
     {
     case WM_INITDIALOG:
         {
-            HWND textBoxHandle;
-            WNDPROC oldWndProc;
-
-            textBoxHandle = GetDlgItem(hwndDlg, IDC_TEXT);
-            oldWndProc = (WNDPROC)GetWindowLongPtr(textBoxHandle, GWLP_WNDPROC);
-            SetWindowLongPtr(textBoxHandle, GWLP_WNDPROC, (LONG_PTR)TextBoxWndProc);
-            SetProp(textBoxHandle, L"OldWndProc", (HANDLE)oldWndProc);
+            SetWindowSubclass(GetDlgItem(hwndDlg, IDC_TEXT), TextBoxSubclassProc, 0, 0);
 
             Button_SetCheck(GetDlgItem(hwndDlg, IDC_INCLUDE), BST_CHECKED);
 
@@ -754,7 +745,7 @@ INT_PTR HandleCommonMessages(
                 {
                     ULONG i;
                     PPH_STRING string;
-                    PFILTER_ENTRY entry;
+                    PFILTER_ENTRY entry = NULL;
                     FILTER_TYPE type;
                     PPH_STRING entryString;
 
@@ -1037,7 +1028,7 @@ INT_PTR CALLBACK LoggingDlgProc(
     {
     case WM_INITDIALOG:
         {
-            SetDlgItemText(hwndDlg, IDC_LOGFILENAME, ((PPH_STRING)PHA_DEREFERENCE(PhGetStringSetting(SETTING_NAME_LOG_FILENAME)))->Buffer);
+            SetDlgItemText(hwndDlg, IDC_LOGFILENAME, ((PPH_STRING)PhAutoDereferenceObject(PhGetStringSetting(SETTING_NAME_LOG_FILENAME)))->Buffer);
         }
         break;
     case WM_COMMAND:
@@ -1057,7 +1048,7 @@ INT_PTR CALLBACK LoggingDlgProc(
                     fileDialog = PhCreateSaveFileDialog();
                     PhSetFileDialogFilter(fileDialog, filters, sizeof(filters) / sizeof(PH_FILETYPE_FILTER));
 
-                    fileName = PhGetFileName(PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_LOGFILENAME));
+                    fileName = PhGetFileName(PhaGetDlgItemText(hwndDlg, IDC_LOGFILENAME));
                     PhSetFileDialogFileName(fileDialog, fileName->Buffer);
                     PhDereferenceObject(fileName);
 
@@ -1082,7 +1073,7 @@ INT_PTR CALLBACK LoggingDlgProc(
             {
             case PSN_APPLY:
                 {
-                    PhSetStringSetting2(SETTING_NAME_LOG_FILENAME, &PHA_GET_DLGITEM_TEXT(hwndDlg, IDC_LOGFILENAME)->sr);
+                    PhSetStringSetting2(SETTING_NAME_LOG_FILENAME, &PhaGetDlgItemText(hwndDlg, IDC_LOGFILENAME)->sr);
 
                     SetWindowLongPtr(hwndDlg, DWLP_MSGRESULT, PSNRET_NOERROR);
                 }
@@ -1108,7 +1099,7 @@ INT_PTR CALLBACK GrowlDlgProc(
         {
             PPH_STRING licenseText;
 
-            licenseText = PhCreateStringFromAnsi(gntp_send_license_text);
+            licenseText = PhConvertMultiByteToUtf16(gntp_send_license_text);
             SetDlgItemText(hwndDlg, IDC_LICENSE, licenseText->Buffer);
             PhDereferenceObject(licenseText);
 

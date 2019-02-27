@@ -2,7 +2,7 @@
  * Process Hacker Extended Tools -
  *   main program
  *
- * Copyright (C) 2010-2011 wj32
+ * Copyright (C) 2010-2015 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -93,6 +93,11 @@ VOID NTAPI SystemInformationInitializingCallback(
     _In_opt_ PVOID Context
     );
 
+VOID NTAPI MiniInformationInitializingCallback(
+    _In_opt_ PVOID Parameter,
+    _In_opt_ PVOID Context
+    );
+
 VOID NTAPI ProcessesUpdatedCallback(
     _In_opt_ PVOID Parameter,
     _In_opt_ PVOID Context
@@ -146,6 +151,7 @@ PH_CALLBACK_REGISTRATION ModuleMenuInitializingCallbackRegistration;
 PH_CALLBACK_REGISTRATION ProcessTreeNewInitializingCallbackRegistration;
 PH_CALLBACK_REGISTRATION NetworkTreeNewInitializingCallbackRegistration;
 PH_CALLBACK_REGISTRATION SystemInformationInitializingCallbackRegistration;
+PH_CALLBACK_REGISTRATION MiniInformationInitializingCallbackRegistration;
 PH_CALLBACK_REGISTRATION ProcessesUpdatedCallbackRegistration;
 PH_CALLBACK_REGISTRATION NetworkItemsUpdatedCallbackRegistration;
 
@@ -163,7 +169,7 @@ LOGICAL DllMain(
         {
             PPH_PLUGIN_INFORMATION info;
 
-            PluginInstance = PhRegisterPlugin(L"ProcessHacker.ExtendedTools", Instance, &info);
+            PluginInstance = PhRegisterPlugin(PLUGIN_NAME, Instance, &info);
 
             if (!PluginInstance)
                 return FALSE;
@@ -171,6 +177,7 @@ LOGICAL DllMain(
             info->DisplayName = L"Extended Tools";
             info->Author = L"wj32";
             info->Description = L"Extended functionality for Windows Vista and above, including ETW monitoring, GPU monitoring and a Disk tab.";
+            info->Url = L"http://processhacker.sf.net/forums/viewtopic.php?t=1114";
             info->HasOptions = TRUE;
 
             PhRegisterCallback(
@@ -258,6 +265,12 @@ LOGICAL DllMain(
                 NULL,
                 &SystemInformationInitializingCallbackRegistration
                 );
+            PhRegisterCallback(
+                PhGetGeneralCallback(GeneralCallbackMiniInformationInitializing),
+                MiniInformationInitializingCallback,
+                NULL,
+                &MiniInformationInitializingCallbackRegistration
+                );
 
             PhRegisterCallback(
                 &PhProcessesUpdatedEvent,
@@ -297,7 +310,8 @@ LOGICAL DllMain(
                     { IntegerPairSettingType, SETTING_NAME_DISK_TREE_LIST_SORT, L"4,2" }, // 4, DescendingSortOrder
                     { IntegerSettingType, SETTING_NAME_ENABLE_ETW_MONITOR, L"1" },
                     { IntegerSettingType, SETTING_NAME_ENABLE_GPU_MONITOR, L"1" },
-                    { StringSettingType, SETTING_NAME_GPU_NODE_BITMAP, L"01000000" }
+                    { StringSettingType, SETTING_NAME_GPU_NODE_BITMAP, L"01000000" },
+                    { IntegerSettingType, SETTING_NAME_GPU_LAST_NODE_COUNT, L"0" }
                 };
 
                 PhAddSettings(settings, sizeof(settings) / sizeof(PH_SETTING_CREATE));
@@ -391,10 +405,7 @@ VOID NTAPI MainWindowShowingCallback(
     _In_opt_ PVOID Context
     )
 {
-    if (EtEtwEnabled)
-    {
-        EtInitializeDiskTab();
-    }
+    EtInitializeDiskTab();
 }
 
 VOID NTAPI ProcessPropertiesInitializingCallback(
@@ -545,6 +556,17 @@ VOID NTAPI SystemInformationInitializingCallback(
         EtEtwSystemInformationInitializing(Parameter);
 }
 
+VOID NTAPI MiniInformationInitializingCallback(
+    _In_opt_ PVOID Parameter,
+    _In_opt_ PVOID Context
+    )
+{
+    if (EtGpuEnabled)
+        EtGpuMiniInformationInitializing(Parameter);
+    if (EtEtwEnabled)
+        EtEtwMiniInformationInitializing(Parameter);
+}
+
 static VOID NTAPI ProcessesUpdatedCallback(
     _In_opt_ PVOID Parameter,
     _In_opt_ PVOID Context
@@ -636,7 +658,7 @@ VOID EtDeleteProcessBlock(
 
     for (i = 1; i <= ETPRTNC_MAXIMUM; i++)
     {
-        PhSwapReference(&Block->TextCache[i], NULL);
+        PhClearReference(&Block->TextCache[i]);
     }
 
     RemoveEntryList(&Block->ListEntry);
@@ -661,7 +683,7 @@ VOID EtDeleteNetworkBlock(
 
     for (i = 1; i <= ETNETNC_MAXIMUM; i++)
     {
-        PhSwapReference(&Block->TextCache[i], NULL);
+        PhClearReference(&Block->TextCache[i]);
     }
 
     RemoveEntryList(&Block->ListEntry);

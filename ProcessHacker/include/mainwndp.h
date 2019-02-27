@@ -1,5 +1,11 @@
-#ifndef MAINWNDP_H
-#define MAINWNDP_H
+#ifndef PH_MAINWNDP_H
+#define PH_MAINWNDP_H
+
+#define PH_FLUSH_PROCESS_QUERY_DATA_INTERVAL_1 250
+#define PH_FLUSH_PROCESS_QUERY_DATA_INTERVAL_2 750
+#define PH_FLUSH_PROCESS_QUERY_DATA_INTERVAL_LONG_TERM 1000
+
+#define TIMER_FLUSH_PROCESS_QUERY_DATA 1
 
 LRESULT CALLBACK PhMwpWndProc(
     _In_ HWND hWnd,
@@ -16,6 +22,10 @@ BOOLEAN PhMwpInitializeWindowClass(
 
 VOID PhMwpInitializeProviders(
     VOID
+    );
+
+VOID PhMwpApplyUpdateInterval(
+    _In_ ULONG Interval
     );
 
 VOID PhMwpInitializeControls(
@@ -81,6 +91,10 @@ VOID PhMwpOnSizing(
 
 VOID PhMwpOnSetFocus(
     VOID
+    );
+
+VOID PhMwpOnTimer(
+    _In_ ULONG Id
     );
 
 BOOLEAN PhMwpOnNotify(
@@ -200,10 +214,6 @@ VOID PhMwpSetCheckOpacityMenu(
     _In_ ULONG Opacity
     );
 
-VOID PhMwpSetWindowOpacity(
-    _In_ ULONG Opacity
-    );
-
 VOID PhMwpSetupComputerMenu(
     _In_ PPH_EMENU_ITEM Root
     );
@@ -231,6 +241,10 @@ VOID PhMwpDispatchMenuCommand(
 
 ULONG_PTR PhMwpLegacyAddPluginMenuItem(
     _In_ PPH_ADDMENUITEM AddMenuItem
+    );
+
+HBITMAP PhMwpGetShieldBitmap(
+    VOID
     );
 
 VOID PhMwpInitializeSubMenu(
@@ -269,6 +283,10 @@ VOID PhMwpSelectTabPage(
     _In_ ULONG Index
     );
 
+INT PhMwpFindTabPageIndex(
+    _In_ PWSTR Text
+    );
+
 // Notifications
 
 VOID PhMwpAddIconProcesses(
@@ -278,6 +296,10 @@ VOID PhMwpAddIconProcesses(
 
 VOID PhMwpShowIconContextMenu(
     _In_ POINT Location
+    );
+
+VOID PhMwpClearLastNotificationDetails(
+    VOID
     );
 
 BOOLEAN PhMwpPluginNotifyEvent(
@@ -303,12 +325,19 @@ BOOLEAN PhMwpSignedProcessTreeFilter(
 
 BOOLEAN PhMwpExecuteProcessPriorityCommand(
     _In_ ULONG Id,
-    _In_ PPH_PROCESS_ITEM ProcessItem
+    _In_ PPH_PROCESS_ITEM *Processes,
+    _In_ ULONG NumberOfProcesses
+    );
+
+BOOLEAN PhMwpExecuteProcessIoPriorityCommand(
+    _In_ ULONG Id,
+    _In_ PPH_PROCESS_ITEM *Processes,
+    _In_ ULONG NumberOfProcesses
     );
 
 VOID PhMwpSetProcessMenuPriorityChecks(
     _In_ PPH_EMENU Menu,
-    _In_ PPH_PROCESS_ITEM Process,
+    _In_ HANDLE ProcessId,
     _In_ BOOLEAN SetPriority,
     _In_ BOOLEAN SetIoPriority,
     _In_ BOOLEAN SetPagePriority

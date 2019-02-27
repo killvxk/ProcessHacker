@@ -68,21 +68,16 @@ for %%a in (
     phsync.h
     queuedlock.h
     ref.h
+    secedit.h
     symprv.h
     templ.h
     treenew.h
+    verify.h
     winmisc.h
     winsta.h
     ) do copy ..\..\phlib\include\%%a ..\..\sdk\include\%%a
 
-for %%a in (
-    colmgr.h
-    extmgr.h
-    hidnproc.h
-    notifico.h
-    phplug.h
-    providers.h
-    ) do copy ..\..\ProcessHacker\include\%%a ..\..\sdk\include\%%a
+call phapppub_gen.cmd
 
 for %%a in (
     phapppub.h

@@ -3,12 +3,17 @@
 
 // main
 
-#ifndef MAIN_PRIVATE
-extern PPH_PLUGIN PluginInstance;
-#endif
+typedef NTSTATUS (NTAPI *_RtlCreateServiceSid)(
+    _In_ PUNICODE_STRING ServiceName,
+    _Out_writes_bytes_opt_(*ServiceSidLength) PSID ServiceSid,
+    _Inout_ PULONG ServiceSidLength
+    );
 
-#define SETTING_PREFIX L"ProcessHacker.ExtendedServices."
-#define SETTING_NAME_ENABLE_SERVICES_MENU (SETTING_PREFIX L"EnableServicesMenu")
+extern PPH_PLUGIN PluginInstance;
+extern _RtlCreateServiceSid RtlCreateServiceSid_I;
+
+#define PLUGIN_NAME L"ProcessHacker.ExtendedServices"
+#define SETTING_NAME_ENABLE_SERVICES_MENU (PLUGIN_NAME L".EnableServicesMenu")
 
 // depend
 
@@ -103,6 +108,15 @@ BOOLEAN EsSaveServiceTriggerInfo(
 VOID EsHandleEventServiceTrigger(
     _In_ struct _ES_TRIGGER_CONTEXT *Context,
     _In_ ULONG Event
+    );
+
+// triggpg
+
+INT_PTR CALLBACK EspServiceTriggersDlgProc(
+    _In_ HWND hwndDlg,
+    _In_ UINT uMsg,
+    _In_ WPARAM wParam,
+    _In_ LPARAM lParam
     );
 
 #endif

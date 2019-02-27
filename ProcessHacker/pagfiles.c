@@ -57,7 +57,7 @@ static VOID PhpAddPagefileItems(
         PPH_STRING newFileName;
         PPH_STRING usage;
 
-        fileName = PhCreateStringEx(pagefile->PageFileName.Buffer, pagefile->PageFileName.Length);
+        fileName = PhCreateStringFromUnicodeString(&pagefile->PageFileName);
         newFileName = PhGetFileName(fileName);
         PhDereferenceObject(fileName);
 
@@ -122,7 +122,7 @@ INT_PTR CALLBACK PhpPagefilesDlgProc(
                 EndDialog(hwndDlg, IDCANCEL);
             }
 
-            SetFocus(GetDlgItem(hwndDlg, IDOK));
+            SendMessage(hwndDlg, WM_NEXTDLGCTL, (WPARAM)GetDlgItem(hwndDlg, IDOK), TRUE);
         }
         break;
     case WM_COMMAND:

@@ -2,7 +2,7 @@
  * Process Hacker -
  *   Subclassed Edit control
  *
- * Copyright (C) 2012-2013 dmex
+ * Copyright (C) 2012-2016 dmex
  *
  * This file is part of Process Hacker.
  *
@@ -22,128 +22,17 @@
  */
 
 #include "toolstatus.h"
-
-//NONCLIENTMETRICS metrics = { sizeof(NONCLIENTMETRICS) };
-//metrics.lfMenuFont.lfHeight = 14;
-//metrics.lfMenuFont.lfWeight = FW_NORMAL;
-//metrics.lfMenuFont.lfQuality = CLEARTYPE_QUALITY | ANTIALIASED_QUALITY;
-
-#ifdef _UXTHEME_ENABLED_
-#include <uxtheme.h>
-#include <vsstyle.h>
+#include <Uxtheme.h>
 #include <vssym32.h>
 
-typedef HRESULT (WINAPI *_GetThemeColor)(
-    _In_ HTHEME hTheme,
-    _In_ INT iPartId,
-    _In_ INT iStateId,
-    _In_ INT iPropId,
-    _Out_ COLORREF *pColor
-    );
-typedef HRESULT (WINAPI *_SetWindowTheme)(
-    _In_ HWND hwnd,
-    _In_ LPCWSTR pszSubAppName,
-    _In_ LPCWSTR pszSubIdList
-    );
+static HMODULE UxThemeHandle = NULL;
+static _IsThemeActive IsThemeActive_I = NULL;
+static _OpenThemeData OpenThemeData_I = NULL;
+static _CloseThemeData CloseThemeData_I = NULL;
+static _IsThemePartDefined IsThemePartDefined_I = NULL;
+static _GetThemeInt GetThemeInt_I = NULL;
 
-typedef HRESULT (WINAPI *_GetThemeFont)(
-    _In_ HTHEME hTheme,
-    _In_ HDC hdc,
-    _In_ INT iPartId,
-    _In_ INT iStateId,
-    _In_ INT iPropId,
-    _Out_ LOGFONTW *pFont
-    );
-
-typedef HRESULT (WINAPI *_GetThemeSysFont)(
-    _In_ HTHEME hTheme,
-    _In_ INT iFontId,
-    _Out_ LOGFONTW *plf
-    );
-
-typedef BOOL (WINAPI *_IsThemeBackgroundPartiallyTransparent)(
-    _In_ HTHEME hTheme,
-    _In_ INT iPartId,
-    _In_ INT iStateId
-    );
-
-typedef HRESULT (WINAPI *_DrawThemeParentBackground)(
-    _In_ HWND hwnd,
-    _In_ HDC hdc,
-    _In_opt_ const RECT* prc
-    );
-
-typedef HRESULT (WINAPI *_GetThemeBackgroundContentRect)(
-    _In_ HTHEME hTheme,
-    _In_ HDC hdc,
-    _In_ INT iPartId,
-    _In_ INT iStateId,
-    _Inout_ LPCRECT pBoundingRect,
-    _Out_ LPRECT pContentRect
-    );
-
-static _IsThemeActive IsThemeActive_I;
-static _OpenThemeData OpenThemeData_I;
-static _SetWindowTheme SetWindowTheme_I;
-static _CloseThemeData CloseThemeData_I;
-static _IsThemePartDefined IsThemePartDefined_I;
-static _DrawThemeBackground DrawThemeBackground_I;
-static _DrawThemeParentBackground DrawThemeParentBackground_I;
-static _IsThemeBackgroundPartiallyTransparent IsThemeBackgroundPartiallyTransparent_I;
-static _GetThemeColor GetThemeColor_I;
-
-static VOID NcAreaInitializeUxTheme(
-    _Inout_ NC_CONTEXT* Context,
-    _In_ HWND hwndDlg
-    )
-{
-    if (!Context->UxThemeModule)
-        Context->UxThemeModule = LoadLibrary(L"uxtheme.dll");
-
-    if (Context->UxThemeModule)
-    {
-        IsThemeActive_I = (_IsThemeActive)GetProcAddress(Context->UxThemeModule, "IsThemeActive");
-        OpenThemeData_I = (_OpenThemeData)GetProcAddress(Context->UxThemeModule, "OpenThemeData");
-        SetWindowTheme_I = (_SetWindowTheme)GetProcAddress(Context->UxThemeModule, "SetWindowTheme");
-        CloseThemeData_I = (_CloseThemeData)GetProcAddress(Context->UxThemeModule, "CloseThemeData");
-        GetThemeColor_I = (_GetThemeColor)GetProcAddress(Context->UxThemeModule, "GetThemeColor");
-        IsThemePartDefined_I = (_IsThemePartDefined)GetProcAddress(Context->UxThemeModule, "IsThemePartDefined");
-        DrawThemeBackground_I = (_DrawThemeBackground)GetProcAddress(Context->UxThemeModule, "DrawThemeBackground");
-        DrawThemeParentBackground_I = (_DrawThemeParentBackground)GetProcAddress(Context->UxThemeModule, "DrawThemeParentBackground");
-        IsThemeBackgroundPartiallyTransparent_I = (_IsThemeBackgroundPartiallyTransparent)GetProcAddress(Context->UxThemeModule, "IsThemeBackgroundPartiallyTransparent");
-    }
-
-    if (IsThemeActive_I && OpenThemeData_I && CloseThemeData_I && IsThemePartDefined_I && DrawThemeBackground_I)
-    {
-        if (Context->UxThemeHandle)
-            CloseThemeData_I(Context->UxThemeHandle);
-
-        Context->IsThemeActive = IsThemeActive_I();
-        Context->UxThemeHandle = OpenThemeData_I(hwndDlg, VSCLASS_EDIT);
-
-        if (Context->UxThemeHandle)
-        {
-            Context->IsThemeBackgroundActive = IsThemePartDefined_I(
-                Context->UxThemeHandle,
-                EP_EDITBORDER_NOSCROLL,
-                0
-                );
-        }
-        else
-        {
-            Context->IsThemeBackgroundActive = FALSE;
-        }
-    }
-    else
-    {
-        Context->UxThemeHandle = NULL;
-        Context->IsThemeActive = FALSE;
-        Context->IsThemeBackgroundActive = FALSE;
-    }
-}
-#endif _UXTHEME_ENABLED_
-
-static VOID NcAreaFreeGdiTheme(
+static VOID NcAreaFreeTheme(
     _Inout_ PEDIT_CONTEXT Context
     )
 {
@@ -153,25 +42,97 @@ static VOID NcAreaFreeGdiTheme(
     if (Context->BrushHot)
         DeleteObject(Context->BrushHot);
 
-    if (Context->BrushFocused)
-        DeleteObject(Context->BrushFocused);
-
-    if (Context->BrushBackground)
-        DeleteObject(Context->BrushBackground);
+    if (Context->BrushPushed)
+        DeleteObject(Context->BrushPushed);
 }
 
-static VOID NcAreaInitializeGdiTheme(
+static VOID NcAreaInitializeFont(
     _Inout_ PEDIT_CONTEXT Context
     )
 {
-    Context->CXBorder = GetSystemMetrics(SM_CXBORDER) * 2;
-    Context->CYBorder = GetSystemMetrics(SM_CYBORDER) * 2;
+    LOGFONT logFont;
+    HDC hdc;
 
+    SystemParametersInfo(SPI_GETICONTITLELOGFONT, sizeof(LOGFONT), &logFont, 0);
+
+    if (hdc = GetDC(Context->WindowHandle))
+    {
+        // Cleanup existing Font handle.
+        if (Context->WindowFont)
+            DeleteObject(Context->WindowFont);
+
+        // Create the font handle
+        Context->WindowFont = CreateFont(
+            -MulDiv(-10, GetDeviceCaps(hdc, LOGPIXELSY), 72),
+            0,
+            0,
+            0,
+            FW_MEDIUM,
+            FALSE,
+            FALSE,
+            FALSE,
+            ANSI_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY | ANTIALIASED_QUALITY,
+            DEFAULT_PITCH,
+            logFont.lfFaceName
+            );
+
+        ReleaseDC(Context->WindowHandle, hdc);
+    }
+
+    SendMessage(Context->WindowHandle, WM_SETFONT, (WPARAM)Context->WindowFont, TRUE);
+}
+
+static VOID NcAreaInitializeTheme(
+    _Inout_ PEDIT_CONTEXT Context
+    )
+{
+    Context->CXWidth = 20;
     Context->BackgroundColorRef = GetSysColor(COLOR_WINDOW);
-    Context->BrushNormal = GetSysColorBrush(COLOR_GRAYTEXT);
-    Context->BrushHot = WindowsVersion < WINDOWS_VISTA ? CreateSolidBrush(RGB(50, 150, 255)) : GetSysColorBrush(COLOR_HIGHLIGHT);
-    Context->BrushFocused = Context->BrushHot;
-    Context->BrushBackground = GetSysColorBrush(Context->BackgroundColorRef);
+    Context->BrushNormal = GetSysColorBrush(COLOR_WINDOW);
+    Context->BrushHot = CreateSolidBrush(RGB(205, 232, 255));
+    Context->BrushPushed = CreateSolidBrush(RGB(153, 209, 255));
+
+    if (!UxThemeHandle)
+    {
+        if (UxThemeHandle = LoadLibrary(L"uxtheme.dll"))
+        {
+            IsThemeActive_I = PhGetProcedureAddress(UxThemeHandle, "IsThemeActive", 0);
+            OpenThemeData_I = PhGetProcedureAddress(UxThemeHandle, "OpenThemeData", 0);
+            CloseThemeData_I = PhGetProcedureAddress(UxThemeHandle, "CloseThemeData", 0);
+            IsThemePartDefined_I = PhGetProcedureAddress(UxThemeHandle, "IsThemePartDefined", 0);
+            GetThemeInt_I = PhGetProcedureAddress(UxThemeHandle, "GetThemeInt", 0);
+        }
+    }
+
+    if (IsThemeActive_I && OpenThemeData_I && GetThemeInt_I && CloseThemeData_I)
+    {
+        if (IsThemeActive_I())
+        {
+            HTHEME themeDataHandle = OpenThemeData_I(Context->WindowHandle, VSCLASS_EDIT);
+            //IsThemePartDefined_I(themeDataHandle, EP_EDITBORDER_NOSCROLL, EPSHV_NORMAL);
+
+            GetThemeInt_I(
+                themeDataHandle,
+                EP_EDITBORDER_NOSCROLL,
+                EPSHV_NORMAL,
+                TMT_BORDERSIZE,
+                &Context->CXBorder
+                );
+
+            CloseThemeData_I(themeDataHandle);
+        }
+        else
+        {
+            Context->CXBorder = GetSystemMetrics(SM_CXBORDER) * 2;
+        }
+    }
+    else
+    {
+        Context->CXBorder = GetSystemMetrics(SM_CXBORDER) * 2;
+    }
 }
 
 static VOID NcAreaInitializeImageList(
@@ -181,328 +142,310 @@ static VOID NcAreaInitializeImageList(
     HBITMAP bitmapActive = NULL;
     HBITMAP bitmapInactive = NULL;
 
+    Context->ImageWidth = 23;
+    Context->ImageHeight = 20;
     Context->ImageList = ImageList_Create(32, 32, ILC_COLOR32 | ILC_MASK, 0, 0);
 
     ImageList_SetBkColor(Context->ImageList, Context->BackgroundColorRef);
     ImageList_SetImageCount(Context->ImageList, 2);
 
     // Add the images to the imagelist
-    if (bitmapActive = LoadImageFromResources(23, 20, MAKEINTRESOURCE(IDB_SEARCH_ACTIVE)))
+    if (bitmapActive = LoadImageFromResources(Context->ImageWidth, Context->ImageHeight, MAKEINTRESOURCE(IDB_SEARCH_ACTIVE)))
     {
         ImageList_Replace(Context->ImageList, 0, bitmapActive, NULL);
         DeleteObject(bitmapActive);
     }
     else
     {
-        PhSetImageListBitmap(Context->ImageList, 0, (HINSTANCE)PluginInstance->DllBase, MAKEINTRESOURCE(IDB_SEARCH_ACTIVE_BMP));
+        PhSetImageListBitmap(Context->ImageList, 0, PluginInstance->DllBase, MAKEINTRESOURCE(IDB_SEARCH_ACTIVE_BMP));
     }
 
-    if (bitmapInactive = LoadImageFromResources(23, 20, MAKEINTRESOURCE(IDB_SEARCH_INACTIVE)))
+    if (bitmapInactive = LoadImageFromResources(Context->ImageWidth, Context->ImageHeight, MAKEINTRESOURCE(IDB_SEARCH_INACTIVE)))
     {
         ImageList_Replace(Context->ImageList, 1, bitmapInactive, NULL);
         DeleteObject(bitmapInactive);
     }
     else
     {
-        PhSetImageListBitmap(Context->ImageList, 1, (HINSTANCE)PluginInstance->DllBase, MAKEINTRESOURCE(IDB_SEARCH_INACTIVE_BMP));
+        PhSetImageListBitmap(Context->ImageList, 1, PluginInstance->DllBase, MAKEINTRESOURCE(IDB_SEARCH_INACTIVE_BMP));
     }
 }
 
 static VOID NcAreaGetButtonRect(
     _Inout_ PEDIT_CONTEXT Context,
-    _In_ RECT* rect
+    _Inout_ PRECT ButtonRect
     )
 {
-    rect->left = rect->right - Context->cxImgSize; // GetSystemMetrics(SM_CXBORDER)
+    ButtonRect->left = (ButtonRect->right - Context->CXWidth) - Context->CXBorder - 1; // offset left border by 1
+    ButtonRect->bottom -= Context->CXBorder;
+    ButtonRect->right -= Context->CXBorder;
+    ButtonRect->top += Context->CXBorder;
+}
+
+static VOID NcAreaDrawButton(
+    _Inout_ PEDIT_CONTEXT Context,
+    _In_ RECT ButtonRect
+    )
+{
+    HDC hdc;
+    HDC bufferDc;
+    HBITMAP bufferBitmap;
+    HBITMAP oldBufferBitmap;
+    RECT bufferRect =
+    {
+        0, 0,
+        ButtonRect.right - ButtonRect.left,
+        ButtonRect.bottom - ButtonRect.top
+    };
+
+    if (!(hdc = GetWindowDC(Context->WindowHandle)))
+        return;
+
+    bufferDc = CreateCompatibleDC(hdc);
+    bufferBitmap = CreateCompatibleBitmap(hdc, bufferRect.right, bufferRect.bottom);
+    oldBufferBitmap = SelectObject(bufferDc, bufferBitmap);
+
+    if (Context->Pushed)
+    {
+        FillRect(bufferDc, &bufferRect, Context->BrushPushed);
+        //FrameRect(bufferDc, &bufferRect, CreateSolidBrush(RGB(0xff, 0, 0)));
+    }
+    else if (Context->Hot)
+    {
+        FillRect(bufferDc, &bufferRect, Context->BrushHot);
+        //FrameRect(bufferDc, &bufferRect, CreateSolidBrush(RGB(38, 160, 218)));
+    }
+    else
+    {
+        FillRect(bufferDc, &bufferRect, Context->BrushNormal);
+    }
+
+    // Draw the image centered within the rect.
+    if (SearchboxText->Length > 0)
+    {
+        ImageList_DrawEx(
+            Context->ImageList,
+            0,
+            bufferDc,
+            bufferRect.left + ((bufferRect.right - bufferRect.left) - Context->ImageWidth) / 2,
+            bufferRect.top + ((bufferRect.bottom - bufferRect.top) - Context->ImageHeight) / 2,
+            0,
+            0,
+            Context->BackgroundColorRef,
+            Context->BackgroundColorRef,
+            ILD_NORMAL | ILD_TRANSPARENT
+            );
+    }
+    else
+    {
+        ImageList_DrawEx(
+            Context->ImageList,
+            1,
+            bufferDc,
+            bufferRect.left + ((bufferRect.right - bufferRect.left) - Context->ImageWidth) / 2,
+            bufferRect.top + ((bufferRect.bottom - bufferRect.top) - (Context->ImageHeight - 1)) / 2, // (Height - 1) image off by one pixel 
+            0,
+            0,
+            Context->BackgroundColorRef,
+            Context->BackgroundColorRef,
+            ILD_NORMAL | ILD_TRANSPARENT
+            );
+    }
+
+    BitBlt(hdc, ButtonRect.left, ButtonRect.top, ButtonRect.right, ButtonRect.bottom, bufferDc, 0, 0, SRCCOPY);
+    SelectObject(bufferDc, oldBufferBitmap);
+    DeleteObject(bufferBitmap);
+    DeleteDC(bufferDc);
+
+    ReleaseDC(Context->WindowHandle, hdc);
 }
 
 static LRESULT CALLBACK NcAreaWndSubclassProc(
-    _In_ HWND hwndDlg,
+    _In_ HWND hWnd,
     _In_ UINT uMsg,
     _In_ WPARAM wParam,
     _In_ LPARAM lParam,
     _In_ UINT_PTR uIdSubclass,
-    _In_ DWORD_PTR dwRefData
+    _In_ ULONG_PTR dwRefData
     )
 {
-    PEDIT_CONTEXT context = (PEDIT_CONTEXT)GetProp(hwndDlg, L"Context");
-    
-    if (context == NULL)
-        return DefSubclassProc(hwndDlg, uMsg, wParam, lParam);
+    PEDIT_CONTEXT context;
 
-    if (uMsg == WM_NCDESTROY)
-    {
-        NcAreaFreeGdiTheme(context);
-
-        if (context->ImageList)
-            ImageList_Destroy(context->ImageList);
-
-#ifdef _UXTHEME_ENABLED_
-        if (CloseThemeData_I && context->UxThemeHandle)
-            CloseThemeData_I(context->UxThemeHandle);
-
-        if (context->UxThemeModule)
-            FreeLibrary(context->UxThemeModule);
-#endif
-
-        RemoveWindowSubclass(hwndDlg, NcAreaWndSubclassProc, 0);
-        RemoveProp(hwndDlg, L"Context");
-        PhFree(context);
-    }
+    context = (PEDIT_CONTEXT)GetProp(hWnd, L"EditSubclassContext");
 
     switch (uMsg)
     {
-#ifdef _UXTHEME_ENABLED_
-    case WM_STYLECHANGED:
-    case WM_THEMECHANGED:
-        NcAreaFreeGdiTheme(context);
-        NcAreaInitializeGdiTheme(context);
-        NcAreaInitializeUxTheme(context);
-        break; 
-#endif
-    case WM_ERASEBKGND:
-        return TRUE;
-    case WM_SYSCOLORCHANGE:
-        NcAreaFreeGdiTheme(context);
-        NcAreaInitializeGdiTheme(context);
-        break;
-    case WM_NCCALCSIZE:
+    case WM_NCDESTROY:
         {
-            PRECT clientRect = (PRECT)lParam;
+            NcAreaFreeTheme(context);
 
-            clientRect->right -= context->cxImgSize;
+            if (context->ImageList)
+                ImageList_Destroy(context->ImageList);
+
+            if (context->WindowFont)
+                DeleteObject(context->WindowFont);
+
+            RemoveWindowSubclass(hWnd, NcAreaWndSubclassProc, uIdSubclass);
+            RemoveProp(hWnd, L"EditSubclassContext");
+            PhFree(context);
         }
         break;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_NCCALCSIZE:
+        {
+            LPNCCALCSIZE_PARAMS ncCalcSize = (NCCALCSIZE_PARAMS*)lParam;
+
+            // Let Windows handle the non-client defaults.
+            DefSubclassProc(hWnd, uMsg, wParam, lParam);
+
+            // Deflate the client area to accommodate the custom button.
+            ncCalcSize->rgrc[0].right -= context->CXWidth;
+        }
+        return 0;
     case WM_NCPAINT:
         {
-            HDC hdc = NULL;
-            RECT clientRect = { 0 };
-            RECT windowRect = { 0 };
+            RECT windowRect;
 
-            BOOL isFocused = (GetFocus() == hwndDlg);
+            // Let Windows handle the non-client defaults.
+            DefSubclassProc(hWnd, uMsg, wParam, lParam);
 
-            if (!(hdc = GetWindowDC(hwndDlg)))
-                return FALSE;
-
-            SetBkMode(hdc, TRANSPARENT);
-
-            // Get the screen coordinates of the client window.
-            GetClientRect(hwndDlg, &clientRect);
             // Get the screen coordinates of the window.
-            GetWindowRect(hwndDlg, &windowRect);
-            // Adjust the coordinates (start from border edge).
-            OffsetRect(&clientRect, context->CXBorder, context->CYBorder);
+            GetWindowRect(hWnd, &windowRect);
+
             // Adjust the coordinates (start from 0,0).
             OffsetRect(&windowRect, -windowRect.left, -windowRect.top);
-
-            // Exclude the client area.
-            ExcludeClipRect(
-                hdc,
-                clientRect.left,
-                clientRect.top,
-                clientRect.right,
-                clientRect.bottom
-                );
-
-            // Draw the themed background. 
-#ifdef _UXTHEME_ENABLED_
-            if (context->IsThemeActive && context->IsThemeBackgroundActive)
-            {
-                if (isFocused)
-                {
-                    if (IsThemeBackgroundPartiallyTransparent_I(
-                        context->UxThemeHandle,
-                        EP_EDITBORDER_NOSCROLL,
-                        EPSN_FOCUSED
-                        ))
-                    {
-                        DrawThemeParentBackground_I(hwndDlg, hdc, NULL);
-                    }
-                    DrawThemeBackground_I(
-                        context->UxThemeHandle,
-                        hdc,
-                        EP_EDITBORDER_NOSCROLL,
-                        EPSN_FOCUSED,
-                        &windowRect,
-                        NULL
-                        );
-                }
-#ifdef _HOTTRACK_ENABLED_
-                else if (context->MouseInClient)
-                {            
-                    if (IsThemeBackgroundPartiallyTransparent_I(
-                        context->UxThemeHandle,
-                        EP_EDITBORDER_NOSCROLL,
-                        EPSN_HOT
-                        ))
-                    {
-                        DrawThemeParentBackground_I(hwndDlg, hdc, NULL);
-                    }
-                    DrawThemeBackground_I(
-                        context->UxThemeHandle,
-                        hdc,
-                        EP_EDITBORDER_NOSCROLL,
-                        EPSN_HOT,
-                        &windowRect,
-                        NULL
-                        );
-                }
-#endif _HOTTRACK_ENABLED_
-                else
-                {
-                    if (IsThemeBackgroundPartiallyTransparent_I(
-                        context->UxThemeHandle,
-                        EP_EDITBORDER_NOSCROLL,
-                        EPSN_NORMAL
-                        ))
-                    {
-                        DrawThemeParentBackground_I(hwndDlg, hdc, NULL);
-                    }
-                    DrawThemeBackground_I(
-                        context->UxThemeHandle,
-                        hdc,
-                        EP_EDITBORDER_NOSCROLL,
-                        EPSN_NORMAL,
-                        &windowRect,
-                        NULL
-                        );
-                }
-            }
-            else
-#endif _UXTHEME_ENABLED_
-            {
-                FillRect(hdc, &windowRect, context->BrushBackground);
-
-                if (isFocused)
-                {
-                    FrameRect(hdc, &windowRect, context->BrushFocused);
-                }
-#ifdef _HOTTRACK_ENABLED_
-                else if (context->MouseInClient)
-                {
-                    FrameRect(hdc, &windowRect, context->BrushHot);
-                }
-#endif
-                else
-                {
-                    FrameRect(hdc, &windowRect, context->BrushNormal);
-                }
-            }
 
             // Get the position of the inserted button.
             NcAreaGetButtonRect(context, &windowRect);
 
             // Draw the button.
-            if (SearchboxText->Length > 0)
-            {
-                ImageList_DrawEx(
-                    context->ImageList,
-                    0,
-                    hdc,
-                    windowRect.left,
-                    windowRect.top,
-                    0,
-                    0,
-                    context->BackgroundColorRef,
-                    context->BackgroundColorRef,
-                    ILD_NORMAL | ILD_TRANSPARENT
-                    );
-            }
-            else
-            {
-                ImageList_DrawEx(
-                    context->ImageList,
-                    1,
-                    hdc,
-                    windowRect.left,
-                    windowRect.top + 1,
-                    0,
-                    0,
-                    context->BackgroundColorRef,
-                    context->BackgroundColorRef,
-                    ILD_NORMAL | ILD_TRANSPARENT
-                    );
-            }
-            
-            // Restore the the client area.
-            IntersectClipRect(
-                hdc,
-                clientRect.left,
-                clientRect.top,
-                clientRect.right,
-                clientRect.bottom
-                );
-
-            ReleaseDC(hwndDlg, hdc);
+            NcAreaDrawButton(context, windowRect);
         }
-        return FALSE;
+        return 0;
     case WM_NCHITTEST:
         {
-            POINT windowPoint = { 0 };
-            RECT windowRect = { 0 };
+            POINT windowPoint;
+            RECT windowRect;
 
             // Get the screen coordinates of the mouse.
             windowPoint.x = GET_X_LPARAM(lParam);
             windowPoint.y = GET_Y_LPARAM(lParam);
 
             // Get the position of the inserted button.
-            GetWindowRect(hwndDlg, &windowRect);
+            GetWindowRect(hWnd, &windowRect);
             NcAreaGetButtonRect(context, &windowRect);
 
             // Check that the mouse is within the inserted button.
             if (PtInRect(&windowRect, windowPoint))
+            {
                 return HTBORDER;
+            }
         }
         break;
     case WM_NCLBUTTONDOWN:
         {
-            POINT windowPoint = { 0 };
-            RECT windowRect = { 0 };
+            POINT windowPoint;
+            RECT windowRect;
 
             // Get the screen coordinates of the mouse.
             windowPoint.x = GET_X_LPARAM(lParam);
             windowPoint.y = GET_Y_LPARAM(lParam);
 
             // Get the position of the inserted button.
-            GetWindowRect(hwndDlg, &windowRect);
+            GetWindowRect(hWnd, &windowRect);
             NcAreaGetButtonRect(context, &windowRect);
 
-            // Check that the mouse is within the button rect.
+            // Check that the mouse is within the inserted button.
             if (PtInRect(&windowRect, windowPoint))
             {
-                SetCapture(hwndDlg);
+                context->Pushed = TRUE;
 
-                // Send click notification
-                SendMessage(PhMainWndHandle, WM_COMMAND, MAKEWPARAM(context->CommandID, BN_CLICKED), 0);
+                SetCapture(hWnd);
 
-                RedrawWindow(hwndDlg, NULL, NULL, RDW_FRAME | RDW_INVALIDATE);
-                return FALSE;
+                RedrawWindow(hWnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE);
             }
         }
         break;
     case WM_LBUTTONUP:
         {
-            if (GetCapture() == hwndDlg)
-            {
-                ReleaseCapture();
+            POINT windowPoint;
+            RECT windowRect;
 
-                RedrawWindow(hwndDlg, NULL, NULL, RDW_FRAME | RDW_INVALIDATE);
-                return FALSE;
+            // Get the screen coordinates of the mouse.
+            windowPoint.x = GET_X_LPARAM(lParam);
+            windowPoint.y = GET_Y_LPARAM(lParam);
+
+            // Get the screen coordinates of the window.
+            GetWindowRect(hWnd, &windowRect);
+
+            // Adjust the coordinates (start from 0,0).
+            OffsetRect(&windowRect, -windowRect.left, -windowRect.top);
+
+            // Get the position of the inserted button.
+            NcAreaGetButtonRect(context, &windowRect);
+
+            // Check that the mouse is within the inserted button.
+            if (PtInRect(&windowRect, windowPoint))
+            {
+                // Forward click notification.
+                SendMessage(PhMainWndHandle, WM_COMMAND, MAKEWPARAM(context->CommandID, BN_CLICKED), 0);
             }
+
+            if (GetCapture() == hWnd)
+            {
+                context->Pushed = FALSE;
+                ReleaseCapture();
+            }
+
+            RedrawWindow(hWnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE);
         }
         break;
     case WM_KEYDOWN:
         {
-            if (WindowsVersion < WINDOWS_VISTA)
+            if (wParam == '\t' || wParam == '\r')
             {
-                // Handle CTRL+A below Vista.
-                if (GetKeyState(VK_CONTROL) & VK_LCONTROL && wParam == 'A')
+                HWND tnHandle;
+
+                tnHandle = GetCurrentTreeNewHandle();
+
+                if (tnHandle)
                 {
-                    Edit_SetSel(hwndDlg, 0, -1);
-                    return FALSE;
+                    SetFocus(tnHandle);
+
+                    if (wParam == '\r')
+                    {
+                        if (TreeNew_GetFlatNodeCount(tnHandle) > 0)
+                        {
+                            TreeNew_DeselectRange(tnHandle, 0, -1);
+                            TreeNew_SelectRange(tnHandle, 0, 0);
+                            TreeNew_SetFocusNode(tnHandle, TreeNew_GetFlatNode(tnHandle, 0));
+                            TreeNew_SetMarkNode(tnHandle, TreeNew_GetFlatNode(tnHandle, 0));
+                        }
+                    }
                 }
+                else
+                {
+                    PTOOLSTATUS_TAB_INFO tabInfo;
+
+                    if ((tabInfo = FindTabInfo(SelectedTabIndex)) && tabInfo->ActivateContent)
+                        tabInfo->ActivateContent(wParam == '\r');
+                }
+
+                return FALSE;
+            }
+
+            // Handle CTRL+A below Vista.
+            if (WindowsVersion < WINDOWS_VISTA && (GetKeyState(VK_CONTROL) & VK_LCONTROL) && wParam == 'A')
+            {
+                Edit_SetSel(hWnd, 0, -1);
+                return FALSE;
             }
         }
+        break;
+    case WM_CHAR:
+        if (wParam == '\t' || wParam == '\r')
+            return FALSE;
         break;
     case WM_CUT:
     case WM_CLEAR:
@@ -510,52 +453,108 @@ static LRESULT CALLBACK NcAreaWndSubclassProc(
     case WM_UNDO:
     case WM_KEYUP:
     case WM_SETTEXT:
-    case WM_SETFOCUS:
     case WM_KILLFOCUS:
-        RedrawWindow(hwndDlg, NULL, NULL, RDW_FRAME | RDW_INVALIDATE);
+        RedrawWindow(hWnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE);
         break;
-#ifdef _HOTTRACK_ENABLED_
-    case WM_MOUSELEAVE:
+    case WM_SETTINGCHANGE:
+    case WM_SYSCOLORCHANGE:
+    case WM_THEMECHANGED:
         {
-            context->MouseInClient = FALSE;
+            NcAreaFreeTheme(context);
+            NcAreaInitializeTheme(context);
+            NcAreaInitializeFont(context);
 
-            RedrawWindow(hwndDlg, NULL, NULL, RDW_FRAME | RDW_INVALIDATE);
+            // Reset the client area margins.
+            SendMessage(hWnd, EM_SETMARGINS, EC_LEFTMARGIN, MAKELPARAM(0, 0));
+
+            // Force the edit control to update its non-client area.
+            RedrawWindow(hWnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE);
+            //SetWindowPos(hWnd, 0, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
         }
         break;
-    case WM_MOUSEMOVE:
+    case WM_SETFOCUS:
         {
-            POINT windowPoint = { 0 };
-            RECT windowRect = { 0 };
+            if (SearchBoxDisplayMode != SEARCHBOX_DISPLAY_MODE_HIDEINACTIVE)
+                break;
+
+            if (!RebarBandExists(REBAR_BAND_ID_SEARCHBOX))
+            {
+                RebarBandInsert(REBAR_BAND_ID_SEARCHBOX, SearchboxHandle, 180, 20);
+            }
+        }
+        break;
+    case WM_NCMOUSEMOVE:
+        {
+            POINT windowPoint;
+            RECT windowRect;
 
             // Get the screen coordinates of the mouse.
             windowPoint.x = GET_X_LPARAM(lParam);
             windowPoint.y = GET_Y_LPARAM(lParam);
 
-            GetWindowRect(hwndDlg, &windowRect);
-            OffsetRect(&windowRect, -windowRect.left, -windowRect.top);
+            // Get the screen coordinates of the window.
+            GetWindowRect(hWnd, &windowRect);
 
+            // Get the position of the inserted button.
+            NcAreaGetButtonRect(context, &windowRect);
+
+            // Check that the mouse is within the inserted button.
             if (PtInRect(&windowRect, windowPoint))
             {
-                TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT) };
-                tme.dwFlags = TME_LEAVE;// | TME_NONCLIENT;
-                tme.hwndTrack = hwndDlg;
+                if (!context->Hot)
+                {
+                    TRACKMOUSEEVENT trackMouseEvent = { sizeof(TRACKMOUSEEVENT) };
+                    trackMouseEvent.dwFlags = TME_LEAVE | TME_NONCLIENT;
+                    trackMouseEvent.hwndTrack = hWnd;
 
-                context->MouseInClient = TRUE;
-                RedrawWindow(hwndDlg, NULL, NULL, RDW_FRAME | RDW_INVALIDATE);
+                    context->Hot = TRUE;
+                    RedrawWindow(hWnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE);
 
-                TrackMouseEvent(&tme);
-            }
-            else
-            {
-                //context->MouseInClient = FALSE;
-                //RedrawWindow(hwndDlg, NULL, NULL, RDW_FRAME | RDW_INVALIDATE);
+                    TrackMouseEvent(&trackMouseEvent);
+                }
             }
         }
         break;
-#endif _HOTTRACK_ENABLED_
+    case WM_NCMOUSELEAVE:
+        {
+            if (context->Hot)
+            {
+                context->Hot = FALSE;
+
+                RedrawWindow(hWnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE);
+            }
+        }
+        break;
+    case WM_MOUSEMOVE:
+        {
+            if ((wParam & MK_LBUTTON) && GetCapture() == hWnd)
+            {
+                POINT windowPoint;
+                RECT windowRect;
+
+                // Get the screen coordinates of the mouse.
+                windowPoint.x = GET_X_LPARAM(lParam);
+                windowPoint.y = GET_Y_LPARAM(lParam);
+
+                // Get the screen coordinates of the window.
+                GetWindowRect(hWnd, &windowRect);
+
+                // Adjust the coordinates (start from 0,0).
+                OffsetRect(&windowRect, -windowRect.left, -windowRect.top);
+
+                // Get the position of the inserted button.
+                NcAreaGetButtonRect(context, &windowRect);
+
+                // Check that the mouse is within the inserted button.
+                context->Pushed = PtInRect(&windowRect, windowPoint);
+
+                RedrawWindow(hWnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE);
+            }
+        }
+        break;
     }
 
-    return DefSubclassProc(hwndDlg, uMsg, wParam, lParam);
+    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
 HBITMAP LoadImageFromResources(
@@ -581,28 +580,17 @@ HBITMAP LoadImageFromResources(
     IWICBitmapSource* wicBitmapSource = NULL;
     IWICBitmapDecoder* wicDecoder = NULL;
     IWICBitmapFrameDecode* wicFrame = NULL;
-    
+    IWICImagingFactory* wicFactory = NULL;
     IWICBitmapScaler* wicScaler = NULL;
     WICPixelFormatGUID pixelFormat;
 
     WICRect rect = { 0, 0, Width, Height };
 
-    static PH_INITONCE initOnce = PH_INITONCE_INIT;
-    static IWICImagingFactory* wicFactory = NULL;
-
     __try
     {
-        if (PhBeginInitOnce(&initOnce))
-        {
-            // Create the ImagingFactory
-            if (FAILED(CoCreateInstance(&CLSID_WICImagingFactory1, NULL, CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory, (PVOID*)&wicFactory)))
-            {
-                PhEndInitOnce(&initOnce);
-                __leave;
-            }
-
-            PhEndInitOnce(&initOnce);
-        }
+        // Create the ImagingFactory
+        if (FAILED(CoCreateInstance(&CLSID_WICImagingFactory1, NULL, CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory, &wicFactory)))
+            __leave;
 
         // Find the resource
         if ((resourceHandleSource = FindResource(PluginInstance->DllBase, Name, L"PNG")) == NULL)
@@ -704,7 +692,7 @@ HBITMAP LoadImageFromResources(
 
         if (wicFactory)
         {
-           // IWICImagingFactory_Release(wicFactory);
+            IWICImagingFactory_Release(wicFactory);
         }
 
         if (resourceHandle)
@@ -716,33 +704,51 @@ HBITMAP LoadImageFromResources(
     return bitmapHandle;
 }
 
-BOOLEAN InsertButton(
-    _In_ HWND hwndDlg,
+HWND CreateSearchControl(
     _In_ UINT CommandID
     )
 {
-    PEDIT_CONTEXT context = (PEDIT_CONTEXT)PhAllocate(sizeof(EDIT_CONTEXT));
+    PEDIT_CONTEXT context;
+
+    context = (PEDIT_CONTEXT)PhAllocate(sizeof(EDIT_CONTEXT));
     memset(context, 0, sizeof(EDIT_CONTEXT));
 
-    context->cxImgSize = 22;
     context->CommandID = CommandID;
-    context->WindowHandle = hwndDlg;
 
-    NcAreaInitializeGdiTheme(context);
+    // Create the SearchBox window.
+    context->WindowHandle = CreateWindowEx(
+        WS_EX_CLIENTEDGE,
+        WC_EDIT,
+        NULL,
+        WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | ES_LEFT | ES_AUTOHSCROLL | WS_VISIBLE,
+        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+        RebarHandle,
+        NULL,
+        NULL,
+        NULL
+        );
+
+    // TODO: Why does the Edit control require WS_VISIBLE to be correctly initialized under some conditions?
+    //  For now just call ShowWindow with SW_HIDE instead of removing the WS_VISIBLE style passed to CreateWindowEx.
+    if (SearchBoxDisplayMode == SEARCHBOX_DISPLAY_MODE_HIDEINACTIVE)
+    {
+        ShowWindow(SearchboxHandle, SW_HIDE);
+    }
+
+    NcAreaInitializeTheme(context);
     NcAreaInitializeImageList(context);
 
+    // Set initial text
+    Edit_SetCueBannerText(context->WindowHandle, L"Search Processes (Ctrl+K)");
+
     // Set our window context data.
-    SetProp(hwndDlg, L"Context", (HANDLE)context);
+    SetProp(context->WindowHandle, L"EditSubclassContext", (HANDLE)context);
 
     // Subclass the Edit control window procedure.
-    SetWindowSubclass(hwndDlg, NcAreaWndSubclassProc, 0, (ULONG_PTR)context);
+    SetWindowSubclass(context->WindowHandle, NcAreaWndSubclassProc, 0, (ULONG_PTR)context);
 
-#ifdef _UXTHEME_ENABLED_
-    SendMessage(hwndDlg, WM_THEMECHANGED, 0, 0);
-#endif _UXTHEME_ENABLED_
+    // Initialize the theme parameters.
+    SendMessage(context->WindowHandle, WM_THEMECHANGED, 0, 0);
 
-    // Force the edit control to update its non-client area.
-    RedrawWindow(hwndDlg, NULL, NULL, RDW_FRAME | RDW_INVALIDATE);
-
-    return TRUE;
+    return context->WindowHandle;
 }

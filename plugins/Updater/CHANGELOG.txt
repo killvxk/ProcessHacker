@@ -1,5 +1,9 @@
+1.6
+ * Fixed background update check interval
+
 1.5
  * Added dynamic URL support
+ * Added digital signature verification
 
 1.4
  * Added PNG images
@@ -29,5 +33,3 @@
 
 1.0
  * Initial release
-
-

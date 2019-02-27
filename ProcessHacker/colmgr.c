@@ -409,7 +409,7 @@ BOOLEAN PhCmLoadSettingsEx(
                 column->Id = id;
                 column->DisplayIndex = displayIndex;
                 column->Width = width;
-                PhAddItemSimpleHashtable(columnHashtable, (PVOID)column->Id, column);
+                PhAddItemSimpleHashtable(columnHashtable, UlongToPtr(column->Id), column);
             }
         }
 
@@ -431,7 +431,7 @@ BOOLEAN PhCmLoadSettingsEx(
 
             if (TreeNew_GetColumn(TreeNewHandle, i, &setColumn))
             {
-                columnPtr = (PPH_TREENEW_COLUMN *)PhFindItemSimpleHashtable(columnHashtable, (PVOID)i);
+                columnPtr = (PPH_TREENEW_COLUMN *)PhFindItemSimpleHashtable(columnHashtable, UlongToPtr(i));
 
                 if (!(Flags & PH_CM_COLUMN_WIDTHS_ONLY))
                 {
@@ -600,7 +600,7 @@ PPH_STRING PhCmSaveSettingsEx(
                         PhAppendFormatStringBuilder(
                             &stringBuilder,
                             L"+%s+%u,%u,%u|",
-                            cmColumn->Plugin->Name,
+                            cmColumn->Plugin->Name.Buffer,
                             cmColumn->SubId,
                             column.DisplayIndex + increment,
                             column.Width
@@ -627,7 +627,7 @@ PPH_STRING PhCmSaveSettingsEx(
                     PhAppendFormatStringBuilder(
                         &stringBuilder,
                         L"+%s+%u,,%u|",
-                        cmColumn->Plugin->Name,
+                        cmColumn->Plugin->Name.Buffer,
                         cmColumn->SubId,
                         column.Width
                         );
@@ -641,7 +641,7 @@ PPH_STRING PhCmSaveSettingsEx(
     }
 
     if (stringBuilder.String->Length != 0)
-        PhRemoveStringBuilder(&stringBuilder, stringBuilder.String->Length / 2 - 1, 1);
+        PhRemoveEndStringBuilder(&stringBuilder, 1);
 
     if (SortSettings)
     {
@@ -664,7 +664,7 @@ PPH_STRING PhCmSaveSettingsEx(
                     if (TreeNew_GetColumn(TreeNewHandle, sortColumn, &column))
                     {
                         cmColumn = column.Context;
-                        *SortSettings = PhFormatString(L"+%s+%u,%u", cmColumn->Plugin->Name, cmColumn->SubId, sortOrder);
+                        *SortSettings = PhFormatString(L"+%s+%u,%u", cmColumn->Plugin->Name.Buffer, cmColumn->SubId, sortOrder);
                     }
                     else
                     {

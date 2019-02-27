@@ -2,7 +2,7 @@
  * Process Hacker -
  *   server client
  *
- * Copyright (C) 2011-2013 wj32
+ * Copyright (C) 2011-2015 wj32
  *
  * This file is part of Process Hacker.
  *
@@ -36,16 +36,7 @@ NTSTATUS PhSvcClientInitialization(
     VOID
     )
 {
-    NTSTATUS status;
-
-    if (!NT_SUCCESS(status = PhCreateObjectType(
-        &PhSvcClientType,
-        L"Client",
-        0,
-        PhSvcpClientDeleteProcedure
-        )))
-        return status;
-
+    PhSvcClientType = PhCreateObjectType(L"Client", 0, PhSvcpClientDeleteProcedure);
     InitializeListHead(&PhSvcClientListHead);
 
     return STATUS_SUCCESS;
@@ -57,17 +48,9 @@ PPHSVC_CLIENT PhSvcCreateClient(
 {
     PPHSVC_CLIENT client;
 
-    if (!NT_SUCCESS(PhCreateObject(
-        &client,
-        sizeof(PHSVC_CLIENT),
-        0,
-        PhSvcClientType
-        )))
-    {
-        return NULL;
-    }
-
+    client = PhCreateObject(sizeof(PHSVC_CLIENT), PhSvcClientType);
     memset(client, 0, sizeof(PHSVC_CLIENT));
+    PhInitializeEvent(&client->ReadyEvent);
 
     if (ClientId)
         client->ClientId = *ClientId;
@@ -84,7 +67,7 @@ VOID NTAPI PhSvcpClientDeleteProcedure(
     _In_ ULONG Flags
     )
 {
-    PPHSVC_CLIENT client = (PPHSVC_CLIENT)Object;
+    PPHSVC_CLIENT client = Object;
 
     PhAcquireQueuedLockExclusive(&PhSvcClientListLock);
     RemoveEntryList(&client->ListEntry);
